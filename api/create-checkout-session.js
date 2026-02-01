@@ -1,7 +1,8 @@
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+import Stripe from 'stripe';
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 export default async function handler(req, res) {
-  // Enable CORS
+  // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -17,6 +18,10 @@ export default async function handler(req, res) {
   try {
     const { items } = req.body;
 
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'No items provided' });
+    }
+
     const line_items = items.map(item => ({
       price_data: {
         currency: 'usd',
@@ -24,7 +29,7 @@ export default async function handler(req, res) {
           name: item.name,
           images: item.image ? [item.image] : [],
         },
-        unit_amount: Math.round(item.price * 100), // Convert to cents
+        unit_amount: Math.round(item.price * 100),
       },
       quantity: item.quantity,
     }));
@@ -32,8 +37,8 @@ export default async function handler(req, res) {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       line_items,
-      success_url: 'https://yourdomain.com/success',
-      cancel_url: 'https://yourdomain.com/cart',
+      success_url: 'https://your-domain.com/success',
+      cancel_url: 'https://your-domain.com/cart',
     });
 
     return res.status(200).json({ url: session.url });
