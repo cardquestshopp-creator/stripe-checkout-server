@@ -40,8 +40,8 @@ export default async function handler(req, res) {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       line_items,
-      success_url: 'https://your-domain.com/success',
-      cancel_url: 'https://your-domain.com/cart',
+      success_url: 'https://cardquestgames.com/success',
+      cancel_url: 'https://cardquestgames.com/cart',
     });
 
     return res.status(200).json({ url: session.url });
