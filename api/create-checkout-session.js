@@ -46,12 +46,16 @@ export default async function handler(req, res) {
       mode: 'payment',
       success_url: 'https://cardquestgames.com/success',
       cancel_url: 'https://cardquestgames.com/cart',
-      // US SHIPPING ONLY
+      // US Shipping only
       shipping_address_collection: {
         allowed_countries: ['US'],
       },
       // Collect phone number
       phone_number_collection: {
+        enabled: true,
+      },
+      // 🆕 AUTOMATIC TAX CALCULATION
+      automatic_tax: {
         enabled: true,
       },
     });
