@@ -1,6 +1,8 @@
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+import Stripe from 'stripe';
 
-module.exports = async (req, res) => {
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+export default async function handler(req, res) {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -44,16 +46,14 @@ module.exports = async (req, res) => {
       mode: 'payment',
       success_url: 'https://cardquestgames.com/success',
       cancel_url: 'https://cardquestgames.com/cart',
-      // 🆕 SHIPPING ADDRESS COLLECTION
+      // US SHIPPING ONLY
       shipping_address_collection: {
-        allowed_countries: ['US', 'CA', 'GB', 'AU', 'MX', 'JP', 'DE', 'FR', 'IT', 'ES'], // Add countries you ship to
+        allowed_countries: ['US'],
       },
-      // 🆕 COLLECT PHONE NUMBER (OPTIONAL)
+      // Collect phone number
       phone_number_collection: {
         enabled: true,
       },
-      // 🆕 CUSTOMER EMAIL
-      customer_email: undefined, // Will prompt for email if not provided
     });
 
     // Return the session URL
@@ -66,4 +66,4 @@ module.exports = async (req, res) => {
       details: error.message 
     });
   }
-};
+}
