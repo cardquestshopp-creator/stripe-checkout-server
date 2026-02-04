@@ -1,21 +1,18 @@
 import Stripe from 'stripe';
-import EasyPost from '@easypost/api';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-const easypost = new EasyPost(process.env.EASYPOST_API_KEY);
 
 export default async function handler(req, res) {
-  // Set CORS headers
+  // Add CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  // Handle preflight OPTIONS request
+  
+  // Handle preflight
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  // Only allow POST requests
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -23,27 +20,15 @@ export default async function handler(req, res) {
   try {
     const { items, shippingRate } = req.body;
 
-    console.log('Received request body:', JSON.stringify(req.body, null, 2));
-
-    // Validate items
     if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'Invalid cart items' });
+      return res.status(400).json({ error: 'No items provided' });
     }
 
-    // Validate shipping rate object
     if (!shippingRate) {
-      return res.status(400).json({ 
-        error: 'Shipping rate is required',
-        received: shippingRate 
-      });
+      return res.status(400).json({ error: 'No shipping rate selected' });
     }
 
-    if (!shippingRate.rate) {
-      return res.status(400).json({ 
-        error: 'Shipping rate must have a "rate" field',
-        received: shippingRate 
-      });
-    }
+    console.log('Received checkout request:', { items, shippingRate });
 
     // Create line items for Stripe
     const lineItems = items.map(item => ({
@@ -58,24 +43,23 @@ export default async function handler(req, res) {
       quantity: item.quantity,
     }));
 
-    // Create a Stripe shipping rate dynamically with the EasyPost price
-    const displayName = shippingRate.carrier && shippingRate.service 
-      ? `${shippingRate.carrier} ${shippingRate.service}`
-      : 'Standard Shipping';
-
+    // Parse shipping rate details
+    const shippingAmount = Math.round(parseFloat(shippingRate.rate) * 100); // Convert to cents
     const deliveryDays = parseInt(shippingRate.deliveryDays) || 5;
 
     console.log('Creating Stripe shipping rate:', {
-      displayName,
-      amount: Math.round(parseFloat(shippingRate.rate) * 100),
-      deliveryDays
+      amount: shippingAmount,
+      deliveryDays,
+      carrier: shippingRate.carrier,
+      service: shippingRate.service
     });
 
+    // Create a Stripe shipping rate
     const stripeShippingRate = await stripe.shippingRates.create({
-      display_name: displayName,
+      display_name: `${shippingRate.carrier} - ${shippingRate.service}`,
       type: 'fixed_amount',
       fixed_amount: {
-        amount: Math.round(parseFloat(shippingRate.rate) * 100), // Convert to cents
+        amount: shippingAmount,
         currency: 'usd',
       },
       delivery_estimate: {
