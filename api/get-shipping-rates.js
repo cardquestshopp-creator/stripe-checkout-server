@@ -2,37 +2,13 @@ import EasyPost from '@easypost/api';
 
 const easypost = new EasyPost(process.env.EASYPOST_API_KEY);
 
-// Estimated weights for product types (in ounces)
-const PRODUCT_WEIGHTS = {
-  'booster box': 32, // ~2 lbs
-  'elite trainer box': 24, // ~1.5 lbs
-  'booster pack': 1, // ~0.06 lbs
-  'single card': 0.5, // ~0.03 lbs
-  'deck': 8, // ~0.5 lbs
-  'collection box': 40, // ~2.5 lbs
-  'default': 16 // ~1 lb default
-};
-
-// Estimate weight based on product name
-function estimateWeight(productName) {
-  const name = productName.toLowerCase();
-  
-  if (name.includes('booster box') || name.includes('box')) return PRODUCT_WEIGHTS['booster box'];
-  if (name.includes('elite trainer') || name.includes('etb')) return PRODUCT_WEIGHTS['elite trainer box'];
-  if (name.includes('booster pack') || name.includes('pack')) return PRODUCT_WEIGHTS['booster pack'];
-  if (name.includes('single') || name.includes('card')) return PRODUCT_WEIGHTS['single card'];
-  if (name.includes('deck')) return PRODUCT_WEIGHTS['deck'];
-  if (name.includes('collection')) return PRODUCT_WEIGHTS['collection box'];
-  
-  return PRODUCT_WEIGHTS['default'];
-}
-
 export default async function handler(req, res) {
-  // CORS headers
+  // Add CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
+  
+  // Handle preflight
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -42,28 +18,27 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { items, shippingAddress } = req.body;
+    const { items, street, city, state, postal_code, country } = req.body;
 
-    // Validate input
     if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'Invalid cart items' });
+      return res.status(400).json({ error: 'No items provided' });
     }
 
-    if (!shippingAddress || !shippingAddress.zip || !shippingAddress.state || !shippingAddress.city) {
-      return res.status(400).json({ error: 'Invalid shipping address' });
+    if (!street || !city || !state || !postal_code) {
+      return res.status(400).json({ error: 'Complete address is required' });
     }
 
-    // Calculate total weight
-    let totalWeight = 0;
-    items.forEach(item => {
-      const itemWeight = estimateWeight(item.name);
-      totalWeight += itemWeight * item.quantity;
-    });
+    console.log('Calculating shipping rates for:', { items, street, city, state, postal_code });
 
-    // Minimum weight of 1 oz
-    totalWeight = Math.max(totalWeight, 1);
+    // Calculate total weight based on items
+    const totalWeight = items.reduce((sum, item) => {
+      const itemWeight = 1; // Default weight per item in oz
+      return sum + (itemWeight * item.quantity);
+    }, 0);
 
-    // Create EasyPost shipment
+    console.log('Total weight:', totalWeight, 'oz');
+
+    // Create EasyPost shipment - shipping FROM your location
     const shipment = await easypost.Shipment.create({
       from_address: {
         street1: '8701 W Foster Ave',
@@ -74,12 +49,11 @@ export default async function handler(req, res) {
         country: 'US',
       },
       to_address: {
-        street1: shippingAddress.line1,
-        street2: shippingAddress.line2 || '',
-        city: shippingAddress.city,
-        state: shippingAddress.state,
-        zip: shippingAddress.zip,
-        country: 'US',
+        street1: street,
+        city: city,
+        state: state,
+        zip: postal_code,
+        country: country || 'US',
       },
       parcel: {
         weight: totalWeight,
@@ -89,6 +63,8 @@ export default async function handler(req, res) {
       },
     });
 
+    console.log('EasyPost shipment created:', shipment.id);
+
     // Format rates for frontend
     const rates = shipment.rates
       .filter(rate => ['USPS', 'UPS', 'FedEx'].includes(rate.carrier))
@@ -97,11 +73,15 @@ export default async function handler(req, res) {
         carrier: rate.carrier,
         service: rate.service,
         rate: parseFloat(rate.rate),
-        delivery_days: rate.delivery_days,
+        deliveryDays: rate.delivery_days || 5,
         delivery_date: rate.delivery_date,
         description: `${rate.carrier} ${rate.service}`,
       }))
       .sort((a, b) => a.rate - b.rate); // Sort by price
+
+    if (rates.length === 0) {
+      return res.status(404).json({ error: 'No shipping rates available for this address' });
+    }
 
     return res.status(200).json({ 
       rates,
@@ -110,6 +90,15 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('Error getting shipping rates:', error);
+    
+    // Handle EasyPost specific errors
+    if (error.message && error.message.includes('Address')) {
+      return res.status(400).json({ 
+        error: 'Invalid shipping address. Please check your address and try again.',
+        details: error.message 
+      });
+    }
+    
     return res.status(500).json({ 
       error: 'Failed to get shipping rates',
       details: error.message 
