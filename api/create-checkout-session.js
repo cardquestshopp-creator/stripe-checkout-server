@@ -20,15 +20,15 @@ export default async function handler(req, res) {
   try {
     const { items, shippingRate } = req.body;
 
+    console.log('Received checkout request:', JSON.stringify({ items, shippingRate }, null, 2));
+
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'No items provided' });
     }
 
-    if (!shippingRate) {
+    if (!shippingRate || !shippingRate.id) {
       return res.status(400).json({ error: 'No shipping rate selected' });
     }
-
-    console.log('Received checkout request:', { items, shippingRate });
 
     // Create line items for Stripe
     const lineItems = items.map(item => ({
@@ -38,10 +38,12 @@ export default async function handler(req, res) {
           name: item.name,
           images: item.image ? [item.image] : [],
         },
-        unit_amount: Math.round(item.price * 100), // Convert to cents
+        unit_amount: Math.round(parseFloat(item.price) * 100), // Convert to cents
       },
-      quantity: item.quantity,
+      quantity: parseInt(item.quantity),
     }));
+
+    console.log('Line items created:', lineItems);
 
     // Parse shipping rate details
     const shippingAmount = Math.round(parseFloat(shippingRate.rate) * 100); // Convert to cents
@@ -81,39 +83,42 @@ export default async function handler(req, res) {
       payment_method_types: ['card'],
       line_items: lineItems,
       mode: 'payment',
-      success_url: 'https://cardquestgames.com/success',
+      success_url: 'https://cardquestgames.com/success?session_id={CHECKOUT_SESSION_ID}',
       cancel_url: 'https://cardquestgames.com/cart',
-      // US Shipping only
       shipping_address_collection: {
         allowed_countries: ['US'],
       },
-      // Use the dynamically created shipping rate
       shipping_options: [
         {
           shipping_rate: stripeShippingRate.id,
         },
       ],
-      // Collect phone number
       phone_number_collection: {
         enabled: true,
       },
-      // Automatic tax calculation
       automatic_tax: {
         enabled: true,
       },
     });
 
     console.log('Created checkout session:', session.id);
+    console.log('Checkout URL:', session.url);
 
     // Return the session URL
-    return res.status(200).json({ url: session.url });
+    return res.status(200).json({ 
+      url: session.url,
+      sessionId: session.id 
+    });
 
   } catch (error) {
     console.error('Error creating checkout session:', error);
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
+    
     return res.status(500).json({ 
       error: 'Failed to create checkout session',
       details: error.message,
-      stack: error.stack
+      type: error.type || 'unknown'
     });
   }
 }
