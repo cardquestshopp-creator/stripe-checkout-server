@@ -1,6 +1,8 @@
 import Stripe from 'stripe';
+import EasyPost from '@easypost/api';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const easypost = new EasyPost(process.env.EASYPOST_API_KEY);
 
 export default async function handler(req, res) {
   // Set CORS headers
@@ -19,16 +21,16 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { items, shippingRate, shippingAddress } = req.body;
+    const { items, shippingRate } = req.body;
 
     // Validate items
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Invalid cart items' });
     }
 
-    // Validate shipping
-    if (!shippingRate || !shippingRate.rate || !shippingRate.description) {
-      return res.status(400).json({ error: 'Invalid shipping rate' });
+    // Validate shipping rate object
+    if (!shippingRate || !shippingRate.rate || !shippingRate.service) {
+      return res.status(400).json({ error: 'Shipping rate information is required' });
     }
 
     // Create line items for Stripe
@@ -44,19 +46,24 @@ export default async function handler(req, res) {
       quantity: item.quantity,
     }));
 
-    // Add shipping as a line item
-    lineItems.push({
-      price_data: {
+    // Create a Stripe shipping rate dynamically with the EasyPost price
+    const stripeShippingRate = await stripe.shippingRates.create({
+      display_name: `${shippingRate.carrier} ${shippingRate.service}`,
+      type: 'fixed_amount',
+      fixed_amount: {
+        amount: Math.round(parseFloat(shippingRate.rate) * 100), // Convert to cents
         currency: 'usd',
-        product_data: {
-          name: `Shipping - ${shippingRate.description}`,
-          description: shippingRate.delivery_days 
-            ? `Estimated delivery: ${shippingRate.delivery_days} days`
-            : 'Standard shipping',
-        },
-        unit_amount: Math.round(shippingRate.rate * 100), // Convert to cents
       },
-      quantity: 1,
+      delivery_estimate: {
+        minimum: {
+          unit: 'business_day',
+          value: parseInt(shippingRate.deliveryDays) || 5,
+        },
+        maximum: {
+          unit: 'business_day',
+          value: (parseInt(shippingRate.deliveryDays) || 5) + 2,
+        },
+      },
     });
 
     // Create Stripe checkout session
@@ -64,15 +71,18 @@ export default async function handler(req, res) {
       payment_method_types: ['card'],
       line_items: lineItems,
       mode: 'payment',
-      success_url: 'https://cardquestgames.com/success?session_id={CHECKOUT_SESSION_ID}',
+      success_url: 'https://cardquestgames.com/success',
       cancel_url: 'https://cardquestgames.com/cart',
-      // Pre-fill shipping address if provided
-      ...(shippingAddress && {
-        shipping_address_collection: {
-          allowed_countries: ['US'],
+      // US Shipping only
+      shipping_address_collection: {
+        allowed_countries: ['US'],
+      },
+      // Use the dynamically created shipping rate
+      shipping_options: [
+        {
+          shipping_rate: stripeShippingRate.id,
         },
-        shipping_options: [], // Empty because we're adding shipping as line item
-      }),
+      ],
       // Collect phone number
       phone_number_collection: {
         enabled: true,
@@ -80,12 +90,6 @@ export default async function handler(req, res) {
       // Automatic tax calculation
       automatic_tax: {
         enabled: true,
-      },
-      // Store shipping rate ID in metadata
-      metadata: {
-        shipping_rate_id: shippingRate.id,
-        carrier: shippingRate.carrier,
-        service: shippingRate.service,
       },
     });
 
