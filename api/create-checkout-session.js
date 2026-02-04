@@ -20,45 +20,62 @@ export default async function handler(req, res) {
   try {
     const { items, shippingRate } = req.body;
 
-    console.log('Received checkout request:', JSON.stringify({ items, shippingRate }, null, 2));
+    console.log('===== CHECKOUT REQUEST =====');
+    console.log('Items received:', JSON.stringify(items, null, 2));
+    console.log('Shipping rate received:', JSON.stringify(shippingRate, null, 2));
 
     if (!items || !Array.isArray(items) || items.length === 0) {
+      console.error('No items provided');
       return res.status(400).json({ error: 'No items provided' });
     }
 
-    if (!shippingRate || !shippingRate.id) {
+    if (!shippingRate) {
+      console.error('No shipping rate provided');
       return res.status(400).json({ error: 'No shipping rate selected' });
     }
 
+    // Validate shipping rate has required fields
+    if (!shippingRate.id || !shippingRate.rate) {
+      console.error('Invalid shipping rate structure:', shippingRate);
+      return res.status(400).json({ error: 'Invalid shipping rate data' });
+    }
+
     // Create line items for Stripe
-    const lineItems = items.map(item => ({
-      price_data: {
-        currency: 'usd',
-        product_data: {
-          name: item.name,
-          images: item.image ? [item.image] : [],
+    const lineItems = items.map(item => {
+      const unitAmount = Math.round(parseFloat(item.price) * 100);
+      console.log(`Item: ${item.name}, Price: $${item.price}, Unit Amount: ${unitAmount} cents`);
+      
+      return {
+        price_data: {
+          currency: 'usd',
+          product_data: {
+            name: item.name,
+            images: item.image ? [item.image] : [],
+          },
+          unit_amount: unitAmount,
         },
-        unit_amount: Math.round(parseFloat(item.price) * 100), // Convert to cents
-      },
-      quantity: parseInt(item.quantity),
-    }));
+        quantity: parseInt(item.quantity),
+      };
+    });
 
-    console.log('Line items created:', lineItems);
+    console.log('Line items created successfully');
 
-    // Parse shipping rate details
-    const shippingAmount = Math.round(parseFloat(shippingRate.rate) * 100); // Convert to cents
-    const deliveryDays = parseInt(shippingRate.deliveryDays) || 5;
+    // Parse shipping rate details with fallbacks
+    const shippingAmount = Math.round(parseFloat(shippingRate.rate) * 100);
+    const deliveryDays = parseInt(shippingRate.deliveryDays || shippingRate.delivery_days || 5);
+    const carrier = shippingRate.carrier || 'Standard';
+    const service = shippingRate.service || 'Shipping';
 
-    console.log('Creating Stripe shipping rate:', {
+    console.log('Shipping details:', {
       amount: shippingAmount,
       deliveryDays,
-      carrier: shippingRate.carrier,
-      service: shippingRate.service
+      carrier,
+      service
     });
 
     // Create a Stripe shipping rate
     const stripeShippingRate = await stripe.shippingRates.create({
-      display_name: `${shippingRate.carrier} - ${shippingRate.service}`,
+      display_name: `${carrier} - ${service}`,
       type: 'fixed_amount',
       fixed_amount: {
         amount: shippingAmount,
@@ -76,7 +93,7 @@ export default async function handler(req, res) {
       },
     });
 
-    console.log('Created Stripe shipping rate:', stripeShippingRate.id);
+    console.log('✅ Created Stripe shipping rate:', stripeShippingRate.id);
 
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
@@ -101,8 +118,8 @@ export default async function handler(req, res) {
       },
     });
 
-    console.log('Created checkout session:', session.id);
-    console.log('Checkout URL:', session.url);
+    console.log('✅ Created checkout session:', session.id);
+    console.log('✅ Checkout URL:', session.url);
 
     // Return the session URL
     return res.status(200).json({ 
@@ -111,14 +128,17 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error('Error creating checkout session:', error);
-    console.error('Error details:', error.message);
-    console.error('Error stack:', error.stack);
+    console.error('❌ ERROR creating checkout session');
+    console.error('Error message:', error.message);
+    console.error('Error type:', error.type);
+    console.error('Error code:', error.code);
+    console.error('Full error:', error);
     
     return res.status(500).json({ 
       error: 'Failed to create checkout session',
       details: error.message,
-      type: error.type || 'unknown'
+      type: error.type || 'unknown',
+      code: error.code || 'unknown'
     });
   }
 }
