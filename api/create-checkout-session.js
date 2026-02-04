@@ -23,14 +23,26 @@ export default async function handler(req, res) {
   try {
     const { items, shippingRate } = req.body;
 
+    console.log('Received request body:', JSON.stringify(req.body, null, 2));
+
     // Validate items
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Invalid cart items' });
     }
 
     // Validate shipping rate object
-    if (!shippingRate || !shippingRate.rate || !shippingRate.service) {
-      return res.status(400).json({ error: 'Shipping rate information is required' });
+    if (!shippingRate) {
+      return res.status(400).json({ 
+        error: 'Shipping rate is required',
+        received: shippingRate 
+      });
+    }
+
+    if (!shippingRate.rate) {
+      return res.status(400).json({ 
+        error: 'Shipping rate must have a "rate" field',
+        received: shippingRate 
+      });
     }
 
     // Create line items for Stripe
@@ -47,8 +59,20 @@ export default async function handler(req, res) {
     }));
 
     // Create a Stripe shipping rate dynamically with the EasyPost price
+    const displayName = shippingRate.carrier && shippingRate.service 
+      ? `${shippingRate.carrier} ${shippingRate.service}`
+      : 'Standard Shipping';
+
+    const deliveryDays = parseInt(shippingRate.deliveryDays) || 5;
+
+    console.log('Creating Stripe shipping rate:', {
+      displayName,
+      amount: Math.round(parseFloat(shippingRate.rate) * 100),
+      deliveryDays
+    });
+
     const stripeShippingRate = await stripe.shippingRates.create({
-      display_name: `${shippingRate.carrier} ${shippingRate.service}`,
+      display_name: displayName,
       type: 'fixed_amount',
       fixed_amount: {
         amount: Math.round(parseFloat(shippingRate.rate) * 100), // Convert to cents
@@ -57,14 +81,16 @@ export default async function handler(req, res) {
       delivery_estimate: {
         minimum: {
           unit: 'business_day',
-          value: parseInt(shippingRate.deliveryDays) || 5,
+          value: deliveryDays,
         },
         maximum: {
           unit: 'business_day',
-          value: (parseInt(shippingRate.deliveryDays) || 5) + 2,
+          value: deliveryDays + 2,
         },
       },
     });
+
+    console.log('Created Stripe shipping rate:', stripeShippingRate.id);
 
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
@@ -93,6 +119,8 @@ export default async function handler(req, res) {
       },
     });
 
+    console.log('Created checkout session:', session.id);
+
     // Return the session URL
     return res.status(200).json({ url: session.url });
 
@@ -100,7 +128,8 @@ export default async function handler(req, res) {
     console.error('Error creating checkout session:', error);
     return res.status(500).json({ 
       error: 'Failed to create checkout session',
-      details: error.message 
+      details: error.message,
+      stack: error.stack
     });
   }
 }
