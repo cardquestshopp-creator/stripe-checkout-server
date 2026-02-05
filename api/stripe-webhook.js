@@ -1,45 +1,47 @@
 import Stripe from 'stripe';
 import { google } from 'googleapis';
-import { buffer } from 'micro';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const auth = new google.auth.JWT(
   process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
   null,
-  process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
   ['https://www.googleapis.com/auth/spreadsheets']
 );
 
 const sheets = google.sheets({ version: 'v4', auth });
 
-// Disable body parsing, need raw body for webhook signature verification
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
+// Helper to read raw body
+async function getRawBody(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks);
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const buf = await buffer(req);
-  const sig = req.headers['stripe-signature'];
-
   let event;
 
   try {
+    // Get raw body for signature verification
+    const rawBody = await getRawBody(req);
+    const sig = req.headers['stripe-signature'];
+
     // Verify webhook signature
     event = stripe.webhooks.constructEvent(
-      buf,
+      rawBody,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
     console.error('⚠️ Webhook signature verification failed:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return res.status(400).json({ error: `Webhook Error: ${err.message}` });
   }
 
   console.log('✅ Webhook verified:', event.type);
@@ -59,7 +61,7 @@ export default async function handler(req, res) {
       for (const item of lineItems.data) {
         const quantity = item.quantity;
         
-        // Get product ID from metadata (you need to set this when creating Stripe products)
+        // Get product ID from metadata
         const product = item.price.product;
         const productId = product.metadata?.productId;
 
@@ -73,12 +75,12 @@ export default async function handler(req, res) {
         // Get current inventory from Google Sheet
         const response = await sheets.spreadsheets.values.get({
           spreadsheetId: process.env.GOOGLE_SHEET_ID,
-          range: 'A2:G', // Adjust if your columns are different
+          range: 'A2:G',
         });
 
         const rows = response.data.values || [];
         
-        // Find the row with matching productId (column G)
+        // Find the row with matching productId (column G = index 6)
         const rowIndex = rows.findIndex(r => r[6] === productId);
 
         if (rowIndex === -1) {
@@ -90,10 +92,10 @@ export default async function handler(req, res) {
         const currentQty = parseInt(rows[rowIndex][2], 10) || 0;
         const newQty = Math.max(0, currentQty - quantity);
 
-        // Update the quantity in Google Sheet
+        // Update the quantity in Google Sheet (row is +2 because: 1 header + 0-indexed)
         await sheets.spreadsheets.values.update({
           spreadsheetId: process.env.GOOGLE_SHEET_ID,
-          range: `C${rowIndex + 2}`, // +2 because: row 1 is headers, arrays are 0-indexed
+          range: `C${rowIndex + 2}`,
           valueInputOption: 'RAW',
           requestBody: {
             values: [[newQty]],
@@ -103,13 +105,20 @@ export default async function handler(req, res) {
         console.log('✅ Updated', productId, ':', currentQty, '→', newQty);
       }
 
-      res.status(200).json({ received: true, message: 'Inventory updated' });
+      return res.status(200).json({ received: true, message: 'Inventory updated' });
     } catch (error) {
       console.error('❌ Error updating inventory:', error);
-      res.status(500).json({ error: 'Failed to update inventory' });
+      return res.status(500).json({ error: 'Failed to update inventory', details: error.message });
     }
   } else {
     // Return 200 for other event types
-    res.status(200).json({ received: true });
+    return res.status(200).json({ received: true });
   }
 }
+
+// Vercel config - disable body parsing
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
