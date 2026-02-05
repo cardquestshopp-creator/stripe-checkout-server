@@ -2,6 +2,8 @@
   "type": "module",
   "dependencies": {
     "stripe": "^14.0.0",
-    "@easypost/api": "^6.0.0"
+    "@easypost/api": "^6.0.0",
+    "googleapis": "^126.0.0",
+    "micro": "^10.0.1"
   }
 }
