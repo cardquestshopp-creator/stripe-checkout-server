@@ -1,18 +1,24 @@
 import Stripe from 'stripe';
+import { google } from 'googleapis';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+const auth = new google.auth.JWT(
+  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+  null,
+  process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  ['https://www.googleapis.com/auth/spreadsheets']
+);
+
+const sheets = google.sheets({ version: 'v4', auth });
+
 export default async function handler(req, res) {
-  // Add CORS headers
+  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  
-  // Handle preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
 
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -20,60 +26,53 @@ export default async function handler(req, res) {
   try {
     const { items, shippingRate } = req.body;
 
-    console.log('===== CHECKOUT REQUEST =====');
-    console.log('Items received:', JSON.stringify(items, null, 2));
-    console.log('Shipping rate received:', JSON.stringify(shippingRate, null, 2));
-
     if (!items || !Array.isArray(items) || items.length === 0) {
-      console.error('No items provided');
       return res.status(400).json({ error: 'No items provided' });
     }
 
-    if (!shippingRate) {
-      console.error('No shipping rate provided');
-      return res.status(400).json({ error: 'No shipping rate selected' });
-    }
-
-    // Validate shipping rate has required fields
-    if (!shippingRate.id || !shippingRate.rate) {
-      console.error('Invalid shipping rate structure:', shippingRate);
-      return res.status(400).json({ error: 'Invalid shipping rate data' });
-    }
-
-    // Create line items for Stripe
-    const lineItems = items.map(item => {
-      const unitAmount = Math.round(parseFloat(item.price) * 100);
-      console.log(`Item: ${item.name}, Price: $${item.price}, Unit Amount: ${unitAmount} cents`);
-      
-      return {
-        price_data: {
-          currency: 'usd',
-          product_data: {
-            name: item.name,
-            images: item.image ? [item.image] : [],
-          },
-          unit_amount: unitAmount,
-        },
-        quantity: parseInt(item.quantity),
-      };
+    // 🔒 INVENTORY CHECK (Google Sheets)
+    const sheetRes = await sheets.spreadsheets.values.get({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      range: 'A2:D'
     });
 
-    console.log('Line items created successfully');
+    const rows = sheetRes.data.values || [];
 
-    // Parse shipping rate details with fallbacks
+    for (const item of items) {
+      if (!item.sku) {
+        return res.status(400).json({ error: 'Missing SKU on item' });
+      }
+
+      const row = rows.find(r => r[0] === item.sku);
+      const stock = row ? parseInt(row[2], 10) : 0;
+
+      if (stock < item.quantity) {
+        return res.status(400).json({
+          error: 'Out of stock',
+          sku: item.sku
+        });
+      }
+    }
+
+    // Create Stripe line items
+    const lineItems = items.map(item => ({
+      price_data: {
+        currency: 'usd',
+        product_data: {
+          name: item.name,
+          images: item.image ? [item.image] : [],
+        },
+        unit_amount: Math.round(parseFloat(item.price) * 100),
+      },
+      quantity: parseInt(item.quantity),
+    }));
+
+    // Shipping
     const shippingAmount = Math.round(parseFloat(shippingRate.rate) * 100);
-    const deliveryDays = parseInt(shippingRate.deliveryDays || shippingRate.delivery_days || 5);
+    const deliveryDays = parseInt(shippingRate.deliveryDays || 5);
     const carrier = shippingRate.carrier || 'Standard';
     const service = shippingRate.service || 'Shipping';
 
-    console.log('Shipping details:', {
-      amount: shippingAmount,
-      deliveryDays,
-      carrier,
-      service
-    });
-
-    // Create a Stripe shipping rate
     const stripeShippingRate = await stripe.shippingRates.create({
       display_name: `${carrier} - ${service}`,
       type: 'fixed_amount',
@@ -82,63 +81,41 @@ export default async function handler(req, res) {
         currency: 'usd',
       },
       delivery_estimate: {
-        minimum: {
-          unit: 'business_day',
-          value: deliveryDays,
-        },
-        maximum: {
-          unit: 'business_day',
-          value: deliveryDays + 2,
-        },
+        minimum: { unit: 'business_day', value: deliveryDays },
+        maximum: { unit: 'business_day', value: deliveryDays + 2 },
       },
     });
 
-    console.log('✅ Created Stripe shipping rate:', stripeShippingRate.id);
-
-    // Create Stripe checkout session
+    // Create Checkout Session
     const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
       payment_method_types: ['card'],
       line_items: lineItems,
-      mode: 'payment',
+      shipping_address_collection: { allowed_countries: ['US'] },
+      shipping_options: [{ shipping_rate: stripeShippingRate.id }],
+      phone_number_collection: { enabled: true },
+      automatic_tax: { enabled: true },
       success_url: 'https://cardquestgames.com/success?session_id={CHECKOUT_SESSION_ID}',
       cancel_url: 'https://cardquestgames.com/cart',
-      shipping_address_collection: {
-        allowed_countries: ['US'],
-      },
-      shipping_options: [
-        {
-          shipping_rate: stripeShippingRate.id,
-        },
-      ],
-      phone_number_collection: {
-        enabled: true,
-      },
-      automatic_tax: {
-        enabled: true,
-      },
+
+      // 🔑 INVENTORY METADATA
+      metadata: {
+        items: JSON.stringify(
+          items.map(i => ({ sku: i.sku, qty: i.quantity }))
+        )
+      }
     });
 
-    console.log('✅ Created checkout session:', session.id);
-    console.log('✅ Checkout URL:', session.url);
-
-    // Return the session URL
-    return res.status(200).json({ 
+    return res.status(200).json({
       url: session.url,
-      sessionId: session.id 
+      sessionId: session.id
     });
 
   } catch (error) {
-    console.error('❌ ERROR creating checkout session');
-    console.error('Error message:', error.message);
-    console.error('Error type:', error.type);
-    console.error('Error code:', error.code);
-    console.error('Full error:', error);
-    
-    return res.status(500).json({ 
+    console.error('Checkout error:', error);
+    return res.status(500).json({
       error: 'Failed to create checkout session',
-      details: error.message,
-      type: error.type || 'unknown',
-      code: error.code || 'unknown'
+      details: error.message
     });
   }
 }
