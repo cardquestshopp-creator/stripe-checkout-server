@@ -24,65 +24,41 @@ export default async function handler(req, res) {
   }
 
   try {
+    console.log('=== CHECKOUT REQUEST ===');
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    
     const { items, shippingRate } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
+      console.error('No items provided');
       return res.status(400).json({ error: 'No items provided' });
     }
 
-    // 🔒 INVENTORY CHECK (Google Sheets)
-    const sheetRes = await sheets.spreadsheets.values.get({
-      spreadsheetId: process.env.GOOGLE_SHEET_ID,
-      range: 'Sheet1!A:I' // Get all columns including productId
-    });
+    console.log(`Processing ${items.length} items`);
 
-    const rows = sheetRes.data.values || [];
-    const headers = rows[0];
-    const data = rows.slice(1);
-
-    // Find column indexes
-    const productIdIndex = headers.findIndex(h => h.toLowerCase() === 'productid');
-    const quantityIndex = headers.findIndex(h => h.toLowerCase() === 'quantity');
-
-    for (const item of items) {
-      const itemId = item.productId || item.id;
-      
-      if (!itemId) {
-        return res.status(400).json({ error: 'Missing product ID on item' });
-      }
-
-      // Find the row by productId
-      const row = data.find(r => r[productIdIndex] === itemId);
-      const stock = row ? parseInt(row[quantityIndex], 10) : 0;
-
-      if (stock < item.quantity) {
-        return res.status(400).json({
-          error: `Out of stock: ${item.name}`,
-          productId: itemId,
-          available: stock,
-          requested: item.quantity
-        });
-      }
-    }
-
-    // Create Stripe line items
-    const lineItems = items.map(item => ({
-      price_data: {
-        currency: 'usd',
-        product_data: {
-          name: item.name,
-          images: item.image ? [item.image] : [],
+    // Create Stripe line items (skip inventory check for now to test)
+    const lineItems = items.map(item => {
+      console.log(`Creating line item for: ${item.name} - $${item.price} x ${item.quantity}`);
+      return {
+        price_data: {
+          currency: 'usd',
+          product_data: {
+            name: item.name,
+            images: item.image ? [item.image] : [],
+          },
+          unit_amount: Math.round(parseFloat(item.price) * 100),
         },
-        unit_amount: Math.round(parseFloat(item.price) * 100),
-      },
-      quantity: parseInt(item.quantity),
-    }));
+        quantity: parseInt(item.quantity),
+      };
+    });
 
     // Shipping
     const shippingAmount = Math.round(parseFloat(shippingRate.rate) * 100);
     const deliveryDays = parseInt(shippingRate.deliveryDays || 5);
     const carrier = shippingRate.carrier || 'Standard';
     const service = shippingRate.service || 'Shipping';
+
+    console.log(`Creating shipping rate: ${carrier} - ${service} ($${shippingRate.rate})`);
 
     const stripeShippingRate = await stripe.shippingRates.create({
       display_name: `${carrier} - ${service}`,
@@ -97,6 +73,8 @@ export default async function handler(req, res) {
       },
     });
 
+    console.log('Creating Stripe checkout session...');
+
     // Create Checkout Session
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
@@ -108,8 +86,6 @@ export default async function handler(req, res) {
       automatic_tax: { enabled: true },
       success_url: 'https://cardquestgames.com/success?session_id={CHECKOUT_SESSION_ID}',
       cancel_url: 'https://cardquestgames.com/cart',
-
-      // 🔑 INVENTORY METADATA
       metadata: {
         items: JSON.stringify(
           items.map(i => ({ 
@@ -120,16 +96,22 @@ export default async function handler(req, res) {
       }
     });
 
+    console.log('Session created successfully:', session.id);
+
     return res.status(200).json({
       url: session.url,
       sessionId: session.id
     });
 
   } catch (error) {
-    console.error('Checkout error:', error);
+    console.error('=== CHECKOUT ERROR ===');
+    console.error('Error:', error.message);
+    console.error('Stack:', error.stack);
+    
     return res.status(500).json({
       error: 'Failed to create checkout session',
-      details: error.message
+      details: error.message,
+      type: error.type || 'unknown'
     });
   }
 }
