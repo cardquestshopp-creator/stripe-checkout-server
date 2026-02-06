@@ -59,32 +59,62 @@ export default async function handler(req, res) {
     try {
       const items = JSON.parse(session.metadata.items || '[]');
 
-      // Get current sheet data
+      // Get current sheet data with ALL columns
       const response = await sheets.spreadsheets.values.get({
         spreadsheetId: process.env.GOOGLE_SHEET_ID,
-        range: 'Sheet1!A:G'
+        range: 'Sheet1!A:Z' // Get all possible columns
       });
 
       const rows = response.data.values || [];
+      
+      if (rows.length === 0) {
+        console.error('Sheet is empty');
+        return res.status(200).json({ received: true, error: 'Empty sheet' });
+      }
+
+      // Dynamically find column indexes (case-insensitive)
+      const headers = rows[0].map(h => (h || '').toLowerCase().trim());
       const data = rows.slice(1);
 
-      // Column G is ProductId (index 6)
-      // Column C is Quantity (index 2)
-      const productIdIndex = 6;
-      const quantityIndex = 2;
+      console.log('Sheet headers:', headers);
+
+      // Find ProductId column (try multiple possible names)
+      const productIdIndex = headers.findIndex(h => 
+        h === 'productid' || h === 'product_id' || h === 'sku' || h === 'id'
+      );
+
+      // Find Quantity column (try multiple possible names)
+      const quantityIndex = headers.findIndex(h => 
+        h === 'quantity' || h === 'qty' || h === 'stock'
+      );
+
+      console.log(`Found columns - ProductId: ${productIdIndex}, Quantity: ${quantityIndex}`);
+
+      if (productIdIndex === -1 || quantityIndex === -1) {
+        console.error('Required columns not found in sheet');
+        console.error('Headers found:', headers);
+        return res.status(200).json({ 
+          received: true, 
+          error: 'Missing required columns' 
+        });
+      }
 
       // Update inventory for each item
       for (const item of items) {
         const productId = item.productId;
         const quantityPurchased = parseInt(item.qty);
 
-        console.log(`Updating inventory for ${productId}: -${quantityPurchased}`);
+        console.log(`Looking for productId: ${productId}, purchased: ${quantityPurchased}`);
 
-        // Find the row index (add 2 because: 1 for header, 1 for 0-based to 1-based)
-        const dataRowIndex = data.findIndex(row => row[productIdIndex] === productId);
+        // Find the product row by productId
+        const dataRowIndex = data.findIndex(row => {
+          const rowProductId = (row[productIdIndex] || '').toString().trim();
+          return rowProductId === productId;
+        });
 
         if (dataRowIndex === -1) {
           console.error(`Product ${productId} not found in sheet`);
+          console.error('Available productIds:', data.map(row => row[productIdIndex]));
           continue;
         }
 
@@ -92,12 +122,20 @@ export default async function handler(req, res) {
         const currentQuantity = parseInt(data[dataRowIndex][quantityIndex]) || 0;
         const newQuantity = Math.max(0, currentQuantity - quantityPurchased);
 
-        console.log(`  Current: ${currentQuantity}, New: ${newQuantity}`);
+        console.log(`  Product: ${productId}`);
+        console.log(`  Row: ${sheetRowNumber}`);
+        console.log(`  Current: ${currentQuantity}, Purchased: ${quantityPurchased}, New: ${newQuantity}`);
 
-        // Update the quantity in column C
+        // Convert column index to letter (A=0, B=1, C=2, etc.)
+        const columnLetter = String.fromCharCode(65 + quantityIndex);
+        const updateRange = `Sheet1!${columnLetter}${sheetRowNumber}`;
+
+        console.log(`  Updating range: ${updateRange}`);
+
+        // Update the quantity
         await sheets.spreadsheets.values.update({
           spreadsheetId: process.env.GOOGLE_SHEET_ID,
-          range: `Sheet1!C${sheetRowNumber}`, // Column C
+          range: updateRange,
           valueInputOption: 'RAW',
           requestBody: {
             values: [[newQuantity]]
@@ -110,6 +148,7 @@ export default async function handler(req, res) {
       console.log('=== INVENTORY UPDATE COMPLETE ===');
     } catch (error) {
       console.error('Error updating inventory:', error);
+      console.error('Error stack:', error.stack);
       // Don't fail the webhook - just log the error
     }
   }
