@@ -3,10 +3,14 @@ import { google } from 'googleapis';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+const privateKey = process.env.GOOGLE_PRIVATE_KEY.includes('\\n')
+  ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
+  : process.env.GOOGLE_PRIVATE_KEY;
+
 const auth = new google.auth.JWT(
   process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
   null,
-  process.env.GOOGLE_PRIVATE_KEY, // Remove the .replace() since it already has real line breaks
+  privateKey,
   ['https://www.googleapis.com/auth/spreadsheets']
 );
 
@@ -34,7 +38,7 @@ export default async function handler(req, res) {
     try {
       const sheetRes = await sheets.spreadsheets.values.get({
         spreadsheetId: process.env.GOOGLE_SHEET_ID,
-        range: 'Sheet1!A1:I', // Adjust if your sheet has a different name
+        range: 'Sheet1!A1:G', // Read columns A through G where ProductId is
       });
 
       const rows = sheetRes.data.values || [];
@@ -42,18 +46,18 @@ export default async function handler(req, res) {
       if (rows.length === 0) {
         console.warn('Warning: Google Sheet is empty');
       } else {
-        const headers = rows[0].map(h => h.toLowerCase());
+        const headers = rows[0];
         const data = rows.slice(1);
 
-        // Find the column indexes
-        const productIdIndex = headers.indexOf('productid');
-        const quantityIndex = headers.indexOf('quantity');
+        console.log('Sheet headers:', headers);
 
-        if (productIdIndex === -1 || quantityIndex === -1) {
-          console.error('Missing required columns in Google Sheet');
-          console.error('Headers found:', headers);
-          throw new Error('Sheet must have productId and quantity columns');
-        }
+        // Column G (ProductId) - index 6
+        // Column C (Quantity) - index 2
+        const productIdIndex = 6;
+        const quantityIndex = 2;
+
+        console.log('Using ProductId from column G (index 6)');
+        console.log('Using Quantity from column C (index 2)');
 
         // Check inventory for each item
         for (const item of items) {
@@ -63,10 +67,17 @@ export default async function handler(req, res) {
             return res.status(400).json({ error: 'Missing product ID on item' });
           }
 
-          // Find the product row
-          const productRow = data.find(row => row[productIdIndex] === itemId);
+          console.log(`Checking stock for productId: ${itemId}`);
+
+          // Find the product row by comparing Column G (ProductId)
+          const productRow = data.find(row => {
+            const sheetProductId = row[productIdIndex];
+            return sheetProductId === itemId;
+          });
           
           if (!productRow) {
+            console.error(`Product not found in sheet: ${itemId}`);
+            console.error('Available product IDs:', data.map(row => row[productIdIndex]).filter(Boolean).join(', '));
             return res.status(400).json({
               error: `Product not found: ${item.name}`,
               productId: itemId
@@ -89,7 +100,7 @@ export default async function handler(req, res) {
       }
     } catch (sheetError) {
       console.error('Google Sheets error:', sheetError.message);
-      // Don't fail checkout if inventory check fails - log it instead
+      // Don't fail checkout if inventory check fails
       console.warn('Proceeding with checkout without inventory validation');
     }
 
