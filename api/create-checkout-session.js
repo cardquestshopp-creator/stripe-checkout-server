@@ -33,23 +33,34 @@ export default async function handler(req, res) {
     // 🔒 INVENTORY CHECK (Google Sheets)
     const sheetRes = await sheets.spreadsheets.values.get({
       spreadsheetId: process.env.GOOGLE_SHEET_ID,
-      range: 'A2:D'
+      range: 'Sheet1!A:I' // Get all columns including productId
     });
 
     const rows = sheetRes.data.values || [];
+    const headers = rows[0];
+    const data = rows.slice(1);
+
+    // Find column indexes
+    const productIdIndex = headers.findIndex(h => h.toLowerCase() === 'productid');
+    const quantityIndex = headers.findIndex(h => h.toLowerCase() === 'quantity');
 
     for (const item of items) {
-      if (!item.sku) {
-        return res.status(400).json({ error: 'Missing SKU on item' });
+      const itemId = item.productId || item.id;
+      
+      if (!itemId) {
+        return res.status(400).json({ error: 'Missing product ID on item' });
       }
 
-      const row = rows.find(r => r[0] === item.sku);
-      const stock = row ? parseInt(row[2], 10) : 0;
+      // Find the row by productId
+      const row = data.find(r => r[productIdIndex] === itemId);
+      const stock = row ? parseInt(row[quantityIndex], 10) : 0;
 
       if (stock < item.quantity) {
         return res.status(400).json({
-          error: 'Out of stock',
-          sku: item.sku
+          error: `Out of stock: ${item.name}`,
+          productId: itemId,
+          available: stock,
+          requested: item.quantity
         });
       }
     }
@@ -101,7 +112,10 @@ export default async function handler(req, res) {
       // 🔑 INVENTORY METADATA
       metadata: {
         items: JSON.stringify(
-          items.map(i => ({ sku: i.sku, qty: i.quantity }))
+          items.map(i => ({ 
+            productId: i.productId || i.id, 
+            qty: i.quantity 
+          }))
         )
       }
     });
