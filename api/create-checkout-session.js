@@ -24,41 +24,93 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log('=== CHECKOUT REQUEST ===');
-    console.log('Body:', JSON.stringify(req.body, null, 2));
-    
     const { items, shippingRate } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
-      console.error('No items provided');
       return res.status(400).json({ error: 'No items provided' });
     }
 
-    console.log(`Processing ${items.length} items`);
+    // 🔒 INVENTORY CHECK - Get data from Google Sheets
+    try {
+      const sheetRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: process.env.GOOGLE_SHEET_ID,
+        range: 'Sheet1!A1:I', // Adjust if your sheet has a different name
+      });
 
-    // Create Stripe line items (skip inventory check for now to test)
-    const lineItems = items.map(item => {
-      console.log(`Creating line item for: ${item.name} - $${item.price} x ${item.quantity}`);
-      return {
-        price_data: {
-          currency: 'usd',
-          product_data: {
-            name: item.name,
-            images: item.image ? [item.image] : [],
-          },
-          unit_amount: Math.round(parseFloat(item.price) * 100),
+      const rows = sheetRes.data.values || [];
+      
+      if (rows.length === 0) {
+        console.warn('Warning: Google Sheet is empty');
+      } else {
+        const headers = rows[0].map(h => h.toLowerCase());
+        const data = rows.slice(1);
+
+        // Find the column indexes
+        const productIdIndex = headers.indexOf('productid');
+        const quantityIndex = headers.indexOf('quantity');
+
+        if (productIdIndex === -1 || quantityIndex === -1) {
+          console.error('Missing required columns in Google Sheet');
+          console.error('Headers found:', headers);
+          throw new Error('Sheet must have productId and quantity columns');
+        }
+
+        // Check inventory for each item
+        for (const item of items) {
+          const itemId = item.productId || item.id;
+          
+          if (!itemId) {
+            return res.status(400).json({ error: 'Missing product ID on item' });
+          }
+
+          // Find the product row
+          const productRow = data.find(row => row[productIdIndex] === itemId);
+          
+          if (!productRow) {
+            return res.status(400).json({
+              error: `Product not found: ${item.name}`,
+              productId: itemId
+            });
+          }
+
+          const availableStock = parseInt(productRow[quantityIndex]) || 0;
+
+          if (availableStock < item.quantity) {
+            return res.status(400).json({
+              error: `Insufficient stock for ${item.name}`,
+              productId: itemId,
+              available: availableStock,
+              requested: item.quantity
+            });
+          }
+
+          console.log(`✓ Stock check passed: ${item.name} (${availableStock} available, ${item.quantity} requested)`);
+        }
+      }
+    } catch (sheetError) {
+      console.error('Google Sheets error:', sheetError.message);
+      // Don't fail checkout if inventory check fails - log it instead
+      console.warn('Proceeding with checkout without inventory validation');
+    }
+
+    // Create Stripe line items
+    const lineItems = items.map(item => ({
+      price_data: {
+        currency: 'usd',
+        product_data: {
+          name: item.name,
+          images: item.image ? [item.image] : [],
         },
-        quantity: parseInt(item.quantity),
-      };
-    });
+        unit_amount: Math.round(parseFloat(item.price) * 100),
+      },
+      quantity: parseInt(item.quantity),
+    }));
 
-    // Shipping
+    // Create shipping rate
     const shippingAmount = Math.round(parseFloat(shippingRate.rate) * 100);
     const deliveryDays = parseInt(shippingRate.deliveryDays || 5);
     const carrier = shippingRate.carrier || 'Standard';
     const service = shippingRate.service || 'Shipping';
-
-    console.log(`Creating shipping rate: ${carrier} - ${service} ($${shippingRate.rate})`);
 
     const stripeShippingRate = await stripe.shippingRates.create({
       display_name: `${carrier} - ${service}`,
@@ -72,8 +124,6 @@ export default async function handler(req, res) {
         maximum: { unit: 'business_day', value: deliveryDays + 2 },
       },
     });
-
-    console.log('Creating Stripe checkout session...');
 
     // Create Checkout Session
     const session = await stripe.checkout.sessions.create({
@@ -96,22 +146,16 @@ export default async function handler(req, res) {
       }
     });
 
-    console.log('Session created successfully:', session.id);
-
     return res.status(200).json({
       url: session.url,
       sessionId: session.id
     });
 
   } catch (error) {
-    console.error('=== CHECKOUT ERROR ===');
-    console.error('Error:', error.message);
-    console.error('Stack:', error.stack);
-    
+    console.error('Checkout error:', error);
     return res.status(500).json({
       error: 'Failed to create checkout session',
-      details: error.message,
-      type: error.type || 'unknown'
+      details: error.message
     });
   }
 }
