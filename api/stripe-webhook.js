@@ -31,12 +31,26 @@ async function buffer(readable) {
 }
 
 export default async function handler(req, res) {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, stripe-signature');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  if (!webhookSecret) {
+    console.error('Missing STRIPE_WEBHOOK_SECRET environment variable');
+    return res.status(500).json({ error: 'Webhook secret not configured' });
+  }
 
   let event;
 
@@ -54,15 +68,32 @@ export default async function handler(req, res) {
 
     console.log('=== CHECKOUT COMPLETED ===');
     console.log('Session ID:', session.id);
+    console.log('Amount paid:', session.amount_total);
     console.log('Metadata:', session.metadata);
 
     try {
-      const items = JSON.parse(session.metadata.items || '[]');
+      // Parse items from metadata
+      let items = [];
+      if (session.metadata && session.metadata.items) {
+        try {
+          items = JSON.parse(session.metadata.items);
+        } catch (parseError) {
+          console.error('Failed to parse metadata items:', parseError);
+          items = [];
+        }
+      }
 
-      // Get current sheet data with ALL columns
+      if (!items || items.length === 0) {
+        console.log('No items in metadata, skipping inventory update');
+        return res.status(200).json({ received: true, message: 'No items to update' });
+      }
+
+      console.log('Processing items:', items);
+
+      // Get current sheet data
       const response = await sheets.spreadsheets.values.get({
         spreadsheetId: process.env.GOOGLE_SHEET_ID,
-        range: 'Sheet1!A:Z' // Get all possible columns
+        range: 'Sheet1!A:Z'
       });
 
       const rows = response.data.values || [];
@@ -72,18 +103,18 @@ export default async function handler(req, res) {
         return res.status(200).json({ received: true, error: 'Empty sheet' });
       }
 
-      // Dynamically find column indexes (case-insensitive)
+      // Find column indexes dynamically
       const headers = rows[0].map(h => (h || '').toLowerCase().trim());
       const data = rows.slice(1);
 
       console.log('Sheet headers:', headers);
 
-      // Find ProductId column (try multiple possible names)
+      // Find ProductId column
       const productIdIndex = headers.findIndex(h => 
         h === 'productid' || h === 'product_id' || h === 'sku' || h === 'id'
       );
 
-      // Find Quantity column (try multiple possible names)
+      // Find Quantity column
       const quantityIndex = headers.findIndex(h => 
         h === 'quantity' || h === 'qty' || h === 'stock'
       );
@@ -91,8 +122,8 @@ export default async function handler(req, res) {
       console.log(`Found columns - ProductId: ${productIdIndex}, Quantity: ${quantityIndex}`);
 
       if (productIdIndex === -1 || quantityIndex === -1) {
-        console.error('Required columns not found in sheet');
-        console.error('Headers found:', headers);
+        console.error('Required columns not found');
+        console.error('Available headers:', headers);
         return res.status(200).json({ 
           received: true, 
           error: 'Missing required columns' 
@@ -100,13 +131,15 @@ export default async function handler(req, res) {
       }
 
       // Update inventory for each item
+      const updates = [];
+      
       for (const item of items) {
         const productId = item.productId;
-        const quantityPurchased = parseInt(item.qty);
+        const quantityPurchased = parseInt(item.qty) || 1;
 
-        console.log(`Looking for productId: ${productId}, purchased: ${quantityPurchased}`);
+        console.log(`\nProcessing: ${productId}, qty purchased: ${quantityPurchased}`);
 
-        // Find the product row by productId
+        // Find the product row
         const dataRowIndex = data.findIndex(row => {
           const rowProductId = (row[productIdIndex] || '').toString().trim();
           return rowProductId === productId;
@@ -114,43 +147,54 @@ export default async function handler(req, res) {
 
         if (dataRowIndex === -1) {
           console.error(`Product ${productId} not found in sheet`);
-          console.error('Available productIds:', data.map(row => row[productIdIndex]));
           continue;
         }
 
-        const sheetRowNumber = dataRowIndex + 2; // +1 for header, +1 for 1-based indexing
+        const sheetRowNumber = dataRowIndex + 2;
         const currentQuantity = parseInt(data[dataRowIndex][quantityIndex]) || 0;
         const newQuantity = Math.max(0, currentQuantity - quantityPurchased);
 
-        console.log(`  Product: ${productId}`);
-        console.log(`  Row: ${sheetRowNumber}`);
-        console.log(`  Current: ${currentQuantity}, Purchased: ${quantityPurchased}, New: ${newQuantity}`);
-
-        // Convert column index to letter (A=0, B=1, C=2, etc.)
-        const columnLetter = String.fromCharCode(65 + quantityIndex);
-        const updateRange = `Sheet1!${columnLetter}${sheetRowNumber}`;
-
-        console.log(`  Updating range: ${updateRange}`);
+        console.log(`  Row: ${sheetRowNumber}, Current: ${currentQuantity}, New: ${newQuantity}`);
 
         // Update the quantity
+        const columnLetter = String.fromCharCode(65 + quantityIndex);
+        
         await sheets.spreadsheets.values.update({
           spreadsheetId: process.env.GOOGLE_SHEET_ID,
-          range: updateRange,
-          valueInputOption: 'RAW',
+          range: `Sheet1!${columnLetter}${sheetRowNumber}`,
+          valueInputOption: 'USER_ENTERED',
           requestBody: {
             values: [[newQuantity]]
           }
         });
 
-        console.log(`✓ Updated ${productId} inventory: ${currentQuantity} → ${newQuantity}`);
+        updates.push({ productId, currentQuantity, newQuantity });
+        console.log(`✓ Updated ${productId}`);
       }
 
-      console.log('=== INVENTORY UPDATE COMPLETE ===');
+      console.log('\n=== INVENTORY UPDATE COMPLETE ===');
+      console.log('Updates:', updates);
+      
+      return res.status(200).json({ 
+        received: true, 
+        message: 'Inventory updated successfully',
+        updates: updates
+      });
+      
     } catch (error) {
       console.error('Error updating inventory:', error);
       console.error('Error stack:', error.stack);
-      // Don't fail the webhook - just log the error
+      // Still return 200 to Stripe so it doesn't retry
+      return res.status(200).json({ 
+        received: true, 
+        error: 'Inventory update failed but checkout completed' 
+      });
     }
+  }
+
+  // Handle checkout.session.expired
+  if (event.type === 'checkout.session.expired') {
+    console.log('Checkout session expired');
   }
 
   res.status(200).json({ received: true });
