@@ -188,8 +188,8 @@ export default async function handler(req, res) {
       
       console.log('Cheapest rate:', cheapestRate.rate, cheapestRate.carrier, cheapestRate.service);
 
-      // Buy the label - pass the full rate object
-      const purchasedShipment = await shipment.buy(cheapestRate);
+      // Buy the label - use static method
+      const purchasedShipment = await easypost.Shipment.buy(shipment.id, cheapestRate.id);
       
       console.log('LABEL PURCHASED!');
       console.log('Tracking:', purchasedShipment.tracker?.tracking_code);
