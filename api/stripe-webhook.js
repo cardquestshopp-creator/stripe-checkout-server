@@ -1,7 +1,9 @@
 import Stripe from 'stripe';
 import { google } from 'googleapis';
+import EasyPost from '@easypost/api';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const easypost = new EasyPost(process.env.EASYPOST_API_KEY);
 
 const privateKey = process.env.GOOGLE_PRIVATE_KEY.includes('\\n')
   ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
@@ -68,8 +70,6 @@ export default async function handler(req, res) {
 
     console.log('=== CHECKOUT COMPLETED ===');
     console.log('Session ID:', session.id);
-    console.log('Amount paid:', session.amount_total);
-    console.log('Metadata:', session.metadata);
 
     try {
       // Parse items from metadata
@@ -83,12 +83,76 @@ export default async function handler(req, res) {
         }
       }
 
-      if (!items || items.length === 0) {
-        console.log('No items in metadata, skipping inventory update');
-        return res.status(200).json({ received: true, message: 'No items to update' });
+      // Get customer shipping info from Stripe
+      const customerName = session.customer_details?.name || 'Customer';
+      const customerEmail = session.customer_details?.email;
+      const shipping = session.shipping_details?.address;
+
+      console.log('Customer:', customerName);
+      console.log('Shipping:', shipping);
+
+      // Create EasyPost shipment AFTER payment succeeds
+      if (shipping) {
+        try {
+          const totalWeight = items.reduce((sum, item) => sum + (1 * (item.qty || 1)), 0);
+          let parcel = { weight: totalWeight || 1, length: 12, width: 9, height: 6 };
+          if (totalWeight > 16) {
+            parcel = { weight: totalWeight, length: 24, width: 18, height: 12 };
+          }
+
+          console.log('Creating EasyPost shipment with parcel:', parcel);
+
+          const shipment = await easypost.Shipment.create({
+            from_address: {
+              name: 'Card Quest Games',
+              street1: '8701 W Foster Ave',
+              street2: 'Unit 301',
+              city: 'Chicago',
+              state: 'IL',
+              zip: '60656',
+              country: 'US',
+              phone: '312-555-1234',
+              email: 'orders@cardquestgames.com',
+            },
+            to_address: {
+              name: customerName,
+              street1: shipping.line1,
+              street2: shipping.line2,
+              city: shipping.city,
+              state: shipping.state,
+              zip: shipping.postal_code,
+              country: shipping.country || 'US',
+              email: customerEmail,
+            },
+            parcel: parcel,
+            reference: session.id,
+          });
+
+          // Find cheapest rate and buy label
+          const rates = shipment.rates.sort((a, b) => parseFloat(a.rate) - parseFloat(b.rate));
+          const cheapestRate = rates[0];
+          
+          console.log('Cheapest rate:', cheapestRate.carrier, cheapestRate.service, '$' + cheapestRate.rate);
+          console.log('Buying label...');
+
+          const purchased = await shipment.buy(cheapestRate.id);
+
+          console.log('=== LABEL PURCHASED ===');
+          console.log('Tracking:', purchased.tracking_code);
+          console.log('Label URL:', purchased.postage_label?.label_url);
+          console.log('Shipment ID:', purchased.id);
+
+        } catch (easypostError) {
+          console.error('EasyPost error:', easypostError.message);
+        }
+      } else {
+        console.log('No shipping address found, skipping shipment creation');
       }
 
-      console.log('Processing items:', items);
+      // Update inventory (existing code)
+      if (!items || items.length === 0) {
+        return res.status(200).json({ received: true });
+      }
 
       // Get current sheet data
       const response = await sheets.spreadsheets.values.get({
@@ -97,104 +161,58 @@ export default async function handler(req, res) {
       });
 
       const rows = response.data.values || [];
-      
       if (rows.length === 0) {
-        console.error('Sheet is empty');
-        return res.status(200).json({ received: true, error: 'Empty sheet' });
+        return res.status(200).json({ received: true });
       }
 
-      // Find column indexes dynamically
       const headers = rows[0].map(h => (h || '').toLowerCase().trim());
       const data = rows.slice(1);
 
-      console.log('Sheet headers:', headers);
-
-      // Find ProductId column
       const productIdIndex = headers.findIndex(h => 
         h === 'productid' || h === 'product_id' || h === 'sku' || h === 'id'
       );
-
-      // Find Quantity column
       const quantityIndex = headers.findIndex(h => 
         h === 'quantity' || h === 'qty' || h === 'stock'
       );
 
-      console.log(`Found columns - ProductId: ${productIdIndex}, Quantity: ${quantityIndex}`);
-
       if (productIdIndex === -1 || quantityIndex === -1) {
-        console.error('Required columns not found');
-        console.error('Available headers:', headers);
-        return res.status(200).json({ 
-          received: true, 
-          error: 'Missing required columns' 
-        });
+        return res.status(200).json({ received: true });
       }
 
-      // Update inventory for each item
-      const updates = [];
-      
       for (const item of items) {
         const productId = item.productId;
         const quantityPurchased = parseInt(item.qty) || 1;
 
-        console.log(`\nProcessing: ${productId}, qty purchased: ${quantityPurchased}`);
-
-        // Find the product row
         const dataRowIndex = data.findIndex(row => {
           const rowProductId = (row[productIdIndex] || '').toString().trim();
           return rowProductId === productId;
         });
 
-        if (dataRowIndex === -1) {
-          console.error(`Product ${productId} not found in sheet`);
-          continue;
-        }
+        if (dataRowIndex === -1) continue;
 
         const sheetRowNumber = dataRowIndex + 2;
         const currentQuantity = parseInt(data[dataRowIndex][quantityIndex]) || 0;
         const newQuantity = Math.max(0, currentQuantity - quantityPurchased);
 
-        console.log(`  Row: ${sheetRowNumber}, Current: ${currentQuantity}, New: ${newQuantity}`);
-
-        // Update the quantity
         const columnLetter = String.fromCharCode(65 + quantityIndex);
         
         await sheets.spreadsheets.values.update({
           spreadsheetId: process.env.GOOGLE_SHEET_ID,
           range: `Sheet1!${columnLetter}${sheetRowNumber}`,
           valueInputOption: 'USER_ENTERED',
-          requestBody: {
-            values: [[newQuantity]]
-          }
+          requestBody: { values: [[newQuantity]] }
         });
 
-        updates.push({ productId, currentQuantity, newQuantity });
-        console.log(`✓ Updated ${productId}`);
+        console.log(`Updated ${productId}: ${currentQuantity} → ${newQuantity}`);
       }
-
-      console.log('\n=== INVENTORY UPDATE COMPLETE ===');
-      console.log('Updates:', updates);
       
-      return res.status(200).json({ 
-        received: true, 
-        message: 'Inventory updated successfully',
-        updates: updates
-      });
+      console.log('=== DONE ===');
+      return res.status(200).json({ received: true });
       
     } catch (error) {
-      console.error('Error updating inventory:', error);
-      console.error('Error stack:', error.stack);
-      // Still return 200 to Stripe so it doesn't retry
-      return res.status(200).json({ 
-        received: true, 
-        error: 'Inventory update failed but checkout completed' 
-      });
+      console.error('Error:', error);
+      return res.status(200).json({ received: true });
     }
-  }
-
-  // Handle checkout.session.expired
-  if (event.type === 'checkout.session.expired') {
-    console.log('Checkout session expired');
   }
 
   res.status(200).json({ received: true });
