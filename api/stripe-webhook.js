@@ -4,11 +4,27 @@ import EasyPost from '@easypost/api';
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const easypost = new EasyPost(process.env.EASYPOST_API_KEY);
 
+// Disable body parser for webhook
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
+// Get raw body as buffer
+async function getRawBody(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 export default async function handler(req, res) {
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Stripe-Signature');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, stripe-signature');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') {
@@ -18,11 +34,13 @@ export default async function handler(req, res) {
   const sig = req.headers['stripe-signature'];
   
   let event;
-  
+
   try {
-    // Use raw body for signature verification
+    // Get raw body FIRST for signature verification
+    const rawBody = await getRawBody(req);
+    
     event = stripe.webhooks.constructEvent(
-      req.body,
+      rawBody,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET
     );
@@ -81,7 +99,7 @@ export default async function handler(req, res) {
       
       // Calculate parcel weight (estimate: 1 oz per item, max 50 lbs)
       const totalItems = items.reduce((sum, item) => sum + (item.qty || 1), 0);
-      const weightOz = Math.min(totalItems * 1, 50); // 1 oz per item, max 50 oz = 3.125 lbs
+      const weightOz = Math.min(totalItems * 1, 50);
       
       const shipment = await easypost.Shipment.create({
         to_address: {
@@ -105,13 +123,13 @@ export default async function handler(req, res) {
           length: 12,
           width: 9,
           height: 6,
-          weight: Math.ceil(weightOz * 28.3495), // Convert oz to grams
+          weight: Math.ceil(weightOz * 28.3495), // oz to grams
         },
       });
 
       console.log('Shipment created:', shipment.id);
 
-      // Get cheapest rate
+      // Get cheapest rate and buy label
       const rates = shipment.rates.sort((a, b) => parseFloat(a.rate) - parseFloat(b.rate));
       const cheapestRate = rates[0];
       
@@ -153,7 +171,6 @@ export default async function handler(req, res) {
         const productIdIndex = 6; // Column G
         const quantityIndex = 2;  // Column C
 
-        // Update inventory for each item
         for (const item of items) {
           const itemId = item.productId;
           
@@ -165,7 +182,7 @@ export default async function handler(req, res) {
             
             await sheets.spreadsheets.values.update({
               spreadsheetId: process.env.GOOGLE_SHEET_ID,
-              range: `Sheet1!C${rowIndex + 2}`, // +2 for header row and 1-based
+              range: `Sheet1!C${rowIndex + 2}`,
               valueInputOption: 'USER_ENTERED',
               requestBody: { values: [[newQty]] }
             });
