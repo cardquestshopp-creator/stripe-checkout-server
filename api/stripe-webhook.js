@@ -57,23 +57,23 @@ export default async function handler(req, res) {
     console.log('Session ID:', session.id);
     
     try {
-      // Get FULL session details with shipping address
+      // Get FULL session details with customer (not shipping_details - not expandable)
       const fullSession = await stripe.checkout.sessions.retrieve(session.id, {
-        expand: ['customer', 'shipping_details']
+        expand: ['customer']
       });
       
       const customerName = fullSession.customer?.name || fullSession.customer_details?.name || 'Customer';
       const customerEmail = fullSession.customer?.email || fullSession.customer_details?.email || '';
       
-      // Get shipping address
-      const shipping = fullSession.shipping_details?.address;
-      const shippingAddress = shipping ? {
-        name: fullSession.shipping_details?.name || customerName,
-        street: shipping.line1,
-        city: shipping.city,
-        state: shipping.state,
-        zipCode: shipping.postal_code,
-        country: shipping.country
+      // Get shipping address directly from session (already included, no expand needed)
+      const shipping = fullSession.shipping_details;
+      const shippingAddress = shipping?.address ? {
+        name: shipping.name || customerName,
+        street: shipping.address.line1,
+        city: shipping.address.city,
+        state: shipping.address.state,
+        zipCode: shipping.address.postal_code,
+        country: shipping.address.country
       } : null;
 
       console.log('Customer:', customerName, customerEmail);
@@ -165,7 +165,6 @@ export default async function handler(req, res) {
         });
 
         const rows = sheetRes.data.values || [];
-        const headers = rows[0];
         const data = rows.slice(1);
 
         const productIdIndex = 6; // Column G
