@@ -3,12 +3,10 @@ import EasyPost from '@easypost/api';
 const easypost = new EasyPost(process.env.EASYPOST_API_KEY);
 
 export default async function handler(req, res) {
-  // Add CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
-  // Handle preflight
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -18,33 +16,26 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { 
-      customerName, 
-      customerEmail,
-      items, 
-      street, 
-      city, 
-      state, 
-      postal_code, 
-      country
-    } = req.body;
+    console.log('=== CREATE SHIPMENT STARTED ===');
+    console.log('API Key exists:', !!process.env.EASYPOST_API_KEY);
+    console.log('API Key prefix:', process.env.EASYPOST_API_KEY?.substring(0, 10));
+    
+    const { customerName, customerEmail, items, street, city, state, postal_code, country } = req.body;
+    
+    console.log('Received data:', { customerName, street, city, state, postal_code });
 
     if (!street || !city || !state || !postal_code) {
       return res.status(400).json({ error: 'Complete address is required' });
     }
 
-    // Calculate total weight (default 1oz per item)
-    const totalWeight = items.reduce((sum, item) => {
-      return sum + (1 * item.quantity);
-    }, 0);
-
-    // Determine parcel size
+    const totalWeight = items.reduce((sum, item) => sum + (1 * item.quantity), 0);
     let parcel = { weight: totalWeight, length: 12, width: 9, height: 6 };
     if (totalWeight > 16) {
       parcel = { weight: totalWeight, length: 24, width: 18, height: 12 };
     }
 
-    // Create EasyPost shipment
+    console.log('Creating EasyPost shipment with parcel:', parcel);
+
     const shipment = await easypost.Shipment.create({
       from_address: {
         name: 'Card Quest Games',
@@ -70,6 +61,10 @@ export default async function handler(req, res) {
       reference: `Order_${Date.now()}`,
     });
 
+    console.log('=== SHIPMENT CREATED SUCCESS ===');
+    console.log('Shipment ID:', shipment.id);
+    console.log('Tracking:', shipment.tracking_code);
+
     return res.status(200).json({ 
       success: true,
       shipmentId: shipment.id,
@@ -77,7 +72,10 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error('Error creating shipment:', error);
-    return res.status(500).json({ error: error.message });
+    console.error('=== SHIPMENT ERROR ===');
+    console.error('Error message:', error.message);
+    console.error('Error code:', error.code);
+    console.error('Full error:', error);
+    return res.status(500).json({ error: error.message, code: error.code });
   }
 }
