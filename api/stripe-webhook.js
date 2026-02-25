@@ -57,7 +57,7 @@ export default async function handler(req, res) {
     console.log('Session ID:', session.id);
     
     try {
-      // Get FULL session details with customer (not shipping_details - not expandable)
+      // Get FULL session details with customer
       const fullSession = await stripe.checkout.sessions.retrieve(session.id, {
         expand: ['customer']
       });
@@ -65,7 +65,7 @@ export default async function handler(req, res) {
       const customerName = fullSession.customer?.name || fullSession.customer_details?.name || 'Customer';
       const customerEmail = fullSession.customer?.email || fullSession.customer_details?.email || '';
       
-      // Get shipping address directly from session (already included, no expand needed)
+      // Get shipping address directly from session (already included)
       const shipping = fullSession.shipping_details;
       const shippingAddress = shipping?.address ? {
         name: shipping.name || customerName,
@@ -94,55 +94,7 @@ export default async function handler(req, res) {
 
       console.log('Items:', JSON.stringify(items));
 
-      // === CREATE EASYPOST SHIPMENT ===
-      console.log('Creating EasyPost shipment...');
-      
-      // Calculate parcel weight (estimate: 1 oz per item, max 50 lbs)
-      const totalItems = items.reduce((sum, item) => sum + (item.qty || 1), 0);
-      const weightOz = Math.min(totalItems * 1, 50);
-      
-      const shipment = await easypost.Shipment.create({
-        to_address: {
-          name: shippingAddress.name,
-          street1: shippingAddress.street,
-          city: shippingAddress.city,
-          state: shippingAddress.state,
-          zip: shippingAddress.zipCode,
-          country: shippingAddress.country || 'US',
-        },
-        from_address: {
-          name: 'Card Quest Games',
-          street1: '8701 W Foster Ave',
-          street2: 'Unit 301',
-          city: 'Chicago',
-          state: 'IL',
-          zip: '60656',
-          country: 'US',
-        },
-        parcel: {
-          length: 12,
-          width: 9,
-          height: 6,
-          weight: Math.ceil(weightOz * 28.3495), // oz to grams
-        },
-      });
-
-      console.log('Shipment created:', shipment.id);
-
-      // Get cheapest rate and buy label
-      const rates = shipment.rates.sort((a, b) => parseFloat(a.rate) - parseFloat(b.rate));
-      const cheapestRate = rates[0];
-      
-      console.log('Cheapest rate:', cheapestRate.rate, cheapestRate.carrier, cheapestRate.service);
-
-      // Buy the label automatically
-      const purchasedShipment = await shipment.buy(cheapestRate.id);
-      
-      console.log('LABEL PURCHASED!');
-      console.log('Tracking:', purchasedShipment.tracker?.tracking_code);
-      console.log('Label URL:', purchasedShipment.postage_label?.label_url);
-
-      // === UPDATE INVENTORY ===
+      // === UPDATE INVENTORY FIRST ===
       try {
         const { google } = await import('googleapis');
         
@@ -186,12 +138,62 @@ export default async function handler(req, res) {
               requestBody: { values: [[newQty]] }
             });
             
-            console.log(`Updated ${itemId}: ${currentQty} → ${newQty}`);
+            console.log(`Inventory updated: ${itemId} from ${currentQty} to ${newQty}`);
           }
         }
+        
+        console.log('Inventory update complete');
       } catch (invError) {
         console.error('Inventory update error:', invError.message);
       }
+
+      // === CREATE EASYPOST SHIPMENT ===
+      console.log('Creating EasyPost shipment...');
+      
+      // Calculate parcel weight (estimate: 1 oz per item, max 50 lbs)
+      const totalItems = items.reduce((sum, item) => sum + (item.qty || 1), 0);
+      const weightOz = Math.min(totalItems * 1, 50);
+      
+      const shipment = await easypost.Shipment.create({
+        to_address: {
+          name: shippingAddress.name,
+          street1: shippingAddress.street,
+          city: shippingAddress.city,
+          state: shippingAddress.state,
+          zip: shippingAddress.zipCode,
+          country: shippingAddress.country || 'US',
+        },
+        from_address: {
+          name: 'Card Quest Games',
+          street1: '8701 W Foster Ave',
+          street2: 'Unit 301',
+          city: 'Chicago',
+          state: 'IL',
+          zip: '60656',
+          country: 'US',
+        },
+        parcel: {
+          length: 12,
+          width: 9,
+          height: 6,
+          weight: Math.ceil(weightOz * 28.3495), // oz to grams
+        },
+      });
+
+      console.log('Shipment created:', shipment.id);
+
+      // Get cheapest rate
+      const rates = shipment.rates.sort((a, b) => parseFloat(a.rate) - parseFloat(b.rate));
+      const cheapestRate = rates[0];
+      
+      console.log('Cheapest rate:', cheapestRate.rate, cheapestRate.carrier, cheapestRate.service);
+
+      // Buy the label - pass the full rate object
+      const purchasedShipment = await shipment.buy(cheapestRate);
+      
+      console.log('LABEL PURCHASED!');
+      console.log('Tracking:', purchasedShipment.tracker?.tracking_code);
+      console.log('Label URL:', purchasedShipment.postage_label?.label_url);
 
       console.log('=== DONE ===');
       
