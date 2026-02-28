@@ -192,7 +192,7 @@ export default async function handler(req, res) {
 
         try {
           await resend.emails.send({
-            from: 'Card Quest Games <onboarding@resend.dev>',
+            from: 'Card Quest Games <orders@cardquestgames.com>',
             to: customerEmail,
             subject: 'Your Order Has Shipped! - Card Quest Games',
             html: `
