@@ -151,7 +151,7 @@ export default async function handler(req, res) {
         items: JSON.stringify(
           items.map(i => ({ 
             productId: i.productId || i.id, 
-            qty: i.quantity 
+            qty: i.quantity, 
             name: i.name,
             price: i.price
           }))
