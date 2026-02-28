@@ -6,14 +6,12 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const easypost = new EasyPost(process.env.EASYPOST_API_KEY);
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Disable body parser for webhook
 export const config = {
   api: {
     bodyParser: false,
   },
 };
 
-// Get raw body as buffer
 async function getRawBody(req) {
   const chunks = [];
   for await (const chunk of req) {
@@ -22,80 +20,7 @@ async function getRawBody(req) {
   return Buffer.concat(chunks);
 }
 
-// Send shipping confirmation email with tracking
-async function sendShippingEmail(customerEmail, customerName, items, shippingAddress, trackingCode, carrier, service) {
-  const itemsList = items.map(item => `
-    <tr>
-      <td style="padding: 12px; border-bottom: 1px solid #eee;">${item.name}</td>
-      <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: center;">${item.qty || 1}</td>
-      <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: right;">$${(item.price || 0).toFixed(2)}</td>
-    </tr>
-  `).join('');
-
-  const trackingUrl = `https://www.easypost.com/trackers/${trackingCode}`;
-
-  const html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <div style="text-align: center; margin-bottom: 30px;">
-        <h1 style="color: #1a1f2e; margin: 0;">🎉 Your Order Has Shipped!</h1>
-      </div>
-      
-      <p style="color: #555; font-size: 16px;">Hi ${customerName},</p>
-      <p style="color: #555; font-size: 16px;">Great news! Your order has been shipped and is on its way to you.</p>
-      
-      <div style="background: #f8f9fa; border-radius: 8px; padding: 20px; margin: 20px 0;">
-        <h3 style="margin-top: 0; color: #1a1f2e;">📦 Shipping Details</h3>
-        <p style="margin: 5px 0; color: #555;"><strong>Carrier:</strong> ${carrier} - ${service}</p>
-        <p style="margin: 5px 0; color: #555;"><strong>Tracking Number:</strong> ${trackingCode}</p>
-        <p style="margin: 5px 0; color: #555;"><a href="${trackingUrl}" style="color: #0066cc;">Track your package on EasyPost</a></p>
-      </div>
-      
-      <div style="background: #f8f9fa; border-radius: 8px; padding: 20px; margin: 20px 0;">
-        <h3 style="margin-top: 0; color: #1a1f2e;">📍 Shipping Address</h3>
-        <p style="margin: 5px 0; color: #555;">${shippingAddress.name}</p>
-        <p style="margin: 5px 0; color: #555;">${shippingAddress.street}</p>
-        <p style="margin: 5px 0; color: #555;">${shippingAddress.city}, ${shippingAddress.state} ${shippingAddress.zipCode}</p>
-      </div>
-      
-      <h3 style="color: #1a1f2e; margin-top: 30px;">📋 Order Items</h3>
-      <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
-        <thead>
-          <tr>
-            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #1a1f2e;">Item</th>
-            <th style="padding: 12px; text-align: center; border-bottom: 2px solid #1a1f2e;">Qty</th>
-            <th style="padding: 12px; text-align: right; border-bottom: 2px solid #1a1f2e;">Price</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${itemsList}
-        </tbody>
-      </table>
-      
-      <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
-        <p style="color: #888; font-size: 14px;">Thank you for your purchase!</p>
-        <p style="color: #888; font-size: 14px;">— The Card Quest Games Team</p>
-      </div>
-    </div>
-  `;
-
-  try {
-    const data = await resend.emails.send({
-      from: 'Card Quest Games <orders@cardquestgames.com>',
-      to: customerEmail,
-      subject: `🎉 Your Order Has Shipped! - Tracking: ${trackingCode}`,
-      html: html,
-    });
-    
-    console.log('Email sent successfully:', data);
-    return data;
-  } catch (error) {
-    console.error('Error sending email:', error);
-    throw error;
-  }
-}
-
 export default async function handler(req, res) {
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, stripe-signature');
@@ -106,13 +31,10 @@ export default async function handler(req, res) {
   }
 
   const sig = req.headers['stripe-signature'];
-  
   let event;
 
   try {
-    // Get raw body FIRST for signature verification
     const rawBody = await getRawBody(req);
-    
     event = stripe.webhooks.constructEvent(
       rawBody,
       sig,
@@ -123,15 +45,10 @@ export default async function handler(req, res) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle checkout.session.completed
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     
-    console.log('=== CHECKOUT COMPLETED ===');
-    console.log('Session ID:', session.id);
-    
     try {
-      // Get FULL session details with customer
       const fullSession = await stripe.checkout.sessions.retrieve(session.id, {
         expand: ['customer']
       });
@@ -139,7 +56,6 @@ export default async function handler(req, res) {
       const customerName = fullSession.customer?.name || fullSession.customer_details?.name || 'Customer';
       const customerEmail = fullSession.customer?.email || fullSession.customer_details?.email || '';
       
-      // Get shipping address directly from session (already included)
       const shipping = fullSession.shipping_details;
       const shippingAddress = shipping?.address ? {
         name: shipping.name || customerName,
@@ -151,24 +67,18 @@ export default async function handler(req, res) {
       } : null;
 
       console.log('Customer:', customerName, customerEmail);
-      console.log('Shipping:', JSON.stringify(shippingAddress));
       
-      if (!shippingAddress) {
-        console.log('No shipping address found, skipping shipment creation');
-        return res.status(200).json({ received: true });
-      }
-
       // Parse items from metadata
       let items = [];
       try {
         items = JSON.parse(session.metadata?.items || '[]');
       } catch (e) {
-        console.error('Failed to parse items from metadata:', e);
+        console.error('Failed to parse items:', e);
       }
 
       console.log('Items:', JSON.stringify(items));
 
-      // === UPDATE INVENTORY FIRST ===
+      // === UPDATE INVENTORY ===
       try {
         const { google } = await import('googleapis');
         
@@ -222,9 +132,11 @@ export default async function handler(req, res) {
       }
 
       // === CREATE EASYPOST SHIPMENT ===
-      console.log('Creating EasyPost shipment...');
+      if (!shippingAddress) {
+        console.log('No shipping address found, skipping shipment');
+        return res.status(200).json({ received: true });
+      }
       
-      // Calculate parcel weight (estimate: 1 oz per item, max 50 lbs)
       const totalItems = items.reduce((sum, item) => sum + (item.qty || 1), 0);
       const weightOz = Math.min(totalItems * 1, 50);
       
@@ -250,38 +162,80 @@ export default async function handler(req, res) {
           length: 12,
           width: 9,
           height: 6,
-          weight: Math.ceil(weightOz * 28.3495), // oz to grams
+          weight: Math.ceil(weightOz * 28.3495),
         },
       });
 
-      console.log('Shipment created:', shipment.id);
-
-      // Get cheapest rate
       const rates = shipment.rates.sort((a, b) => parseFloat(a.rate) - parseFloat(b.rate));
       const cheapestRate = rates[0];
       
-      console.log('Cheapest rate:', cheapestRate.rate, cheapestRate.carrier, cheapestRate.service);
-
-      // Buy the label - use static method
       const purchasedShipment = await easypost.Shipment.buy(shipment.id, cheapestRate.id);
       
-      console.log('LABEL PURCHASED!');
-      console.log('Tracking:', purchasedShipment.tracker?.tracking_code);
-      console.log('Label URL:', purchasedShipment.postage_label?.label_url);
+      const trackingCode = purchasedShipment.tracking_code;
+      const trackingUrl = purchasedShipment.tracker?.public_url;
+      const carrier = purchasedShipment.carrier;
+      const service = purchasedShipment.service;
 
-      // === SEND SHIPPING EMAIL WITH TRACKING ===
-      if (customerEmail && purchasedShipment.tracker?.tracking_code) {
-        console.log('Sending shipping confirmation email...');
-        await sendShippingEmail(
-          customerEmail,
-          customerName,
-          items,
-          shippingAddress,
-          purchasedShipment.tracker.tracking_code,
-          cheapestRate.carrier,
-          cheapestRate.service
-        );
-        console.log('Shipping email sent!');
+      console.log('LABEL PURCHASED! Tracking:', trackingCode);
+
+      // === SEND EMAIL WITH RESEND ===
+      if (customerEmail) {
+        const itemsHtml = items.map(item => `
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;">${item.name}</td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">${item.qty || 1}</td>
+            <td style="padding: 8px; border: 1px solid #ddd;">$${parseFloat(item.price).toFixed(2)}</td>
+          </tr>
+        `).join('');
+
+        const totalAmount = items.reduce((sum, item) => sum + (parseFloat(item.price) * (item.qty || 1)), 0);
+
+        try {
+          await resend.emails.send({
+            from: 'Card Quest Games <onboarding@resend.dev>',
+            to: customerEmail,
+            subject: 'Your Order Has Shipped! - Card Quest Games',
+            html: `
+              <h1>Thank you for your order, ${customerName}!</h1>
+              <p>Great news - your order has shipped! Here are the details:</p>
+              
+              <h2>Shipping Information</h2>
+              <p><strong>Carrier:</strong> ${carrier} (${service})</p>
+              <p><strong>Tracking Number:</strong> ${trackingCode}</p>
+              <p><strong>Tracking Link:</strong> <a href="${trackingUrl}">${trackingUrl}</a></p>
+              
+              <h3>Shipping Address:</h3>
+              <p>
+                ${shippingAddress.name}<br>
+                ${shippingAddress.street}<br>
+                ${shippingAddress.city}, ${shippingAddress.state} ${shippingAddress.zipCode}
+              </p>
+              
+              <h2>Order Details</h2>
+              <table style="border-collapse: collapse; width: 100%;">
+                <thead>
+                  <tr style="background: #f5f5f5;">
+                    <th style="padding: 8px; border: 1px solid #ddd; text-align: left;">Item</th>
+                    <th style="padding: 8px; border: 1px solid #ddd;">Qty</th>
+                    <th style="padding: 8px; border: 1px solid #ddd;">Price</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${itemsHtml}
+                  <tr style="background: #f9f9f9;">
+                    <td colspan="2" style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">Total</td>
+                    <td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">$${totalAmount.toFixed(2)}</td>
+                  </tr>
+                </tbody>
+              </table>
+              
+              <p>Thank you for shopping with Card Quest Games!</p>
+            `,
+          });
+          console.log('Email sent to:', customerEmail);
+        } catch (emailError) {
+          console.error('Error sending email:', emailError);
+        }
       }
 
       console.log('=== DONE ===');
@@ -290,9 +244,6 @@ export default async function handler(req, res) {
       console.error('Error processing checkout:', error);
     }
   }
-
-  return res.status(200).json({ received: true });
-}
 
   return res.status(200).json({ received: true });
 }
