@@ -2,6 +2,13 @@ import EasyPost from '@easypost/api';
 
 const easypost = new EasyPost(process.env.EASYPOST_API_KEY);
 
+// Size tier parcel dimensions (in inches)
+const SIZE_DIMENSIONS = {
+  Small: { length: 7, width: 4, height: 1 },    // Singles, small accessories
+  Medium: { length: 8, width: 6, height: 4 },    // ETBs, booster boxes
+  Large: { length: 16, width: 12, height: 6 }   // Large sealed products
+};
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -23,18 +30,46 @@ export default async function handler(req, res) {
     const { customerName, customerEmail, items, street, city, state, postal_code, country } = req.body;
     
     console.log('Received data:', { customerName, street, city, state, postal_code });
+    console.log('Items received:', items);
 
     if (!street || !city || !state || !postal_code) {
       return res.status(400).json({ error: 'Complete address is required' });
     }
 
-    const totalWeight = items.reduce((sum, item) => sum + (1 * item.quantity), 0);
-    let parcel = { weight: totalWeight, length: 12, width: 9, height: 6 };
-    if (totalWeight > 16) {
-      parcel = { weight: totalWeight, length: 24, width: 18, height: 12 };
-    }
+    // Determine the maximum size tier in the cart
+    let maxSizeTier = 'Small';
+    let totalWeight = 0;
 
-    console.log('Creating EasyPost shipment with parcel:', parcel);
+    items.forEach(item => {
+      // Get size tier (Small, Medium, Large) - default to Small
+      const itemSize = item.size || 'Small';
+      
+      // Track largest size tier
+      if (itemSize === 'Large') {
+        maxSizeTier = 'Large';
+      } else if (itemSize === 'Medium' && maxSizeTier !== 'Large') {
+        maxSizeTier = 'Medium';
+      }
+      
+      // Calculate total weight (item weight × quantity), default to 1 lb
+      const itemWeight = item.weight || 1;
+      totalWeight += itemWeight * item.quantity;
+    });
+
+    // Get dimensions based on largest item in cart
+    const dims = SIZE_DIMENSIONS[maxSizeTier] || SIZE_DIMENSIONS.Small;
+
+    // Create parcel with correct dimensions and calculated weight
+    const parcel = {
+      weight: totalWeight,
+      length: dims.length,
+      width: dims.width,
+      height: dims.height
+    };
+
+    console.log('Max size tier:', maxSizeTier);
+    console.log('Total weight:', totalWeight, 'lbs');
+    console.log('Parcel dimensions:', parcel);
 
     const shipment = await easypost.Shipment.create({
       from_address: {
