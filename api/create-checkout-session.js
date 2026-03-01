@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import { google } from 'googleapis';
+import { googleapis } from 'googleapis';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -14,7 +14,7 @@ const auth = new google.auth.JWT(
   ['https://www.googleapis.com/auth/spreadsheets']
 );
 
-const sheets = google.sheets({ version: 'v4', auth });
+const sheets = googleapis.google.sheets({ version: 'v4', auth });
 
 export default async function handler(req, res) {
   // CORS
@@ -137,6 +137,7 @@ export default async function handler(req, res) {
     });
 
     // Create Checkout Session
+    // Include size and weight in metadata for shipment creation
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       payment_method_types: ['card'],
@@ -153,7 +154,9 @@ export default async function handler(req, res) {
             productId: i.productId || i.id, 
             qty: i.quantity, 
             name: i.name,
-            price: i.price
+            price: i.price,
+            size: i.size || 'Small',    // Size tier for shipping
+            weight: i.weight || 1        // Weight in lbs for shipping
           }))
         )
       }
