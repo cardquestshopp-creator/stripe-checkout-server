@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import { googleapis } from 'googleapis';
+import { google } from 'googleapis';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -14,7 +14,7 @@ const auth = new google.auth.JWT(
   ['https://www.googleapis.com/auth/spreadsheets']
 );
 
-const sheets = googleapis.google.sheets({ version: 'v4', auth });
+const sheets = google.sheets({ version: 'v4', auth });
 
 export default async function handler(req, res) {
   // CORS
