@@ -26,7 +26,7 @@ export default async function handler(req, res) {
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: process.env.GOOGLE_SHEET_ID,
-      range: 'Sheet1!A:I', // ← CHANGED: Read columns A through I
+      range: 'Sheet1!A:K', // ← CHANGED: Read columns A through K
     });
 
     const rows = response.data.values || [];
@@ -44,11 +44,13 @@ export default async function handler(req, res) {
       price: row[1],           // Column B - Price
       quantity: row[2],        // Column C - Quantity
       condition: row[3],       // Column D - Condition
-      category: row[4],        // Column E - Category
+      category: row[4],         // Column E - Category
       tcg: row[5],             // Column F - TCG
       productId: row[6],       // Column G - ProductId
       imageUrl: row[7],        // Column H - Front Image
-      backImageUrl: row[8],    // Column I - Back Image ← ADDED
+      backImageUrl: row[8],    // Column I - Back Image
+      size: row[9],            // Column J - Size (Small, Medium, Large)
+      weight: row[10],         // Column K - Weight (in lbs)
     })).filter(item => parseInt(item.quantity || 0) > 0); // Only in-stock items
 
     // Filter by category if provided
