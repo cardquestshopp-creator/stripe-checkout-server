@@ -20,8 +20,8 @@ async function getRawBody(req) {
   return Buffer.concat(chunks);
 }
 
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+export default async function handler(req, res.setHeader('Access) {
+  res-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, stripe-signature');
 
@@ -137,8 +137,45 @@ export default async function handler(req, res) {
         return res.status(200).json({ received: true });
       }
       
-      const totalItems = items.reduce((sum, item) => sum + (item.qty || 1), 0);
-      const weightOz = Math.min(totalItems * 1, 50);
+      // === SIZE AND WEIGHT LOGIC ===
+      // Size tier dimensions (in inches) - CORRECTED
+      const sizeDimensions = {
+        'Small':  { length: 7, width: 4, height: 1 },   // Single cards
+        'Medium': { length: 8, width: 6, height: 4 },  // ETBs, small boxes
+        'Large':  { length: 16, width: 12, height: 6 }, // Booster boxes, bulky items
+      };
+      
+      // Determine the largest size in the cart for parcel dimensions
+      const sizePriority = { 'Small': 1, 'Medium': 2, 'Large': 3 };
+      let maxSizeTier = 'Small';
+      
+      for (const item of items) {
+        const itemSize = item.size || 'Small';
+        if ((sizePriority[itemSize] || 1) > (sizePriority[maxSizeTier] || 1)) {
+          maxSizeTier = itemSize;
+        }
+      }
+      
+      const parcelDimensions = sizeDimensions[maxSizeTier] || sizeDimensions['Small'];
+      
+      // Calculate total weight from items (weight is in POUNDS per item)
+      let totalWeightLbs = 0;
+      for (const item of items) {
+        const itemWeight = parseFloat(item.weight) || 1; // Default 1 lb if not set
+        const itemQty = item.qty || 1;
+        totalWeightLbs += itemWeight * itemQty;
+      }
+      
+      // Convert pounds to ounces for EasyPost (1 lb = 16 oz)
+      const totalWeightOz = totalWeightLbs * 16;
+      
+      // Cap weight at 50 oz (about 3 lbs) for EasyPost
+      const weightOz = Math.min(totalWeightOz, 50);
+      
+      console.log('Parcel size tier:', maxSizeTier);
+      console.log('Parcel dimensions:', parcelDimensions);
+      console.log('Total weight (lbs):', totalWeightLbs);
+      console.log('Total weight (oz):', weightOz);
       
       const shipment = await easypost.Shipment.create({
         to_address: {
@@ -159,10 +196,10 @@ export default async function handler(req, res) {
           country: 'US',
         },
         parcel: {
-          length: 12,
-          width: 9,
-          height: 6,
-          weight: Math.ceil(weightOz * 28.3495),
+          length: parcelDimensions.length,
+          width: parcelDimensions.width,
+          height: parcelDimensions.height,
+          weight: Math.ceil(weightOz * 28.3495), // Convert oz to grams
         },
       });
 
