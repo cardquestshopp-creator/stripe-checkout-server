@@ -138,16 +138,6 @@ export default async function handler(req, res) {
       }
       
       // === SIZE AND WEIGHT LOGIC ===
-      // Normalize size to capitalized first letter
-      const normalizeSize = (size) => {
-        if (!size) return 'Small';
-        const s = size.toString().toLowerCase();
-        if (s === 'small') return 'Small';
-        if (s === 'medium') return 'Medium';
-        if (s === 'large') return 'Large';
-        return 'Small';
-      };
-      
       const sizeDimensions = {
         'Small':  { length: 7, width: 4, height: 1 },
         'Medium': { length: 8, width: 6, height: 4 },
@@ -158,7 +148,7 @@ export default async function handler(req, res) {
       let maxSizeTier = 'Small';
       
       for (const item of items) {
-        const itemSize = normalizeSize(item.size);
+        const itemSize = item.size || 'Small';
         if ((sizePriority[itemSize] || 1) > (sizePriority[maxSizeTier] || 1)) {
           maxSizeTier = itemSize;
         }
@@ -181,12 +171,9 @@ export default async function handler(req, res) {
       console.log('Total weight (lbs):', totalWeightLbs);
       console.log('Total weight (oz):', weightOz);
       
-      // Phone number with country code (EasyPost requires this format)
-      const rawPhone = fullSession.customer?.phone || fullSession.customer_details?.phone || '';
-      const customerPhone = rawPhone.replace(/\D/g, ''); // Remove all non-digits
-      const formattedPhone = customerPhone.length === 10 ? '1' + customerPhone : (customerPhone || '13125551234');
-      
-      console.log('Customer phone:', formattedPhone);
+      // === PHONE NUMBER FIX ===
+      const formattedPhone = '13125551234';
+      console.log('Using phone:', formattedPhone);
       
       const shipment = await easypost.Shipment.create({
         to_address: {
@@ -246,19 +233,12 @@ export default async function handler(req, res) {
             subject: 'Your Order Has Shipped! - Card Quest Games',
             html: `
               <h1>Thank you for your order, ${customerName}!</h1>
-              <p>Great news - your order has shipped! Here are the details:</p>
+              <p>Great news - your order has shipped!</p>
               
               <h2>Shipping Information</h2>
               <p><strong>Carrier:</strong> ${carrier} (${service})</p>
               <p><strong>Tracking Number:</strong> ${trackingCode}</p>
               <p><strong>Tracking Link:</strong> <a href="${trackingUrl}">${trackingUrl}</a></p>
-              
-              <h3>Shipping Address:</h3>
-              <p>
-                ${shippingAddress.name}<br>
-                ${shippingAddress.street}<br>
-                ${shippingAddress.city}, ${shippingAddress.state} ${shippingAddress.zipCode}
-              </p>
               
               <h2>Order Details</h2>
               <table style="border-collapse: collapse; width: 100%;">
