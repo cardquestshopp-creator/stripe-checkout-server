@@ -201,7 +201,7 @@ export default async function handler(req, res) {
           length: parcelDimensions.length,
           width: parcelDimensions.width,
           height: parcelDimensions.height,
-          weight: Math.ceil(weightOz * 28.3495),
+          weight: Math.ceil(weightOz),
         },
       });
 
