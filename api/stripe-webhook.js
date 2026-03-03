@@ -171,9 +171,11 @@ export default async function handler(req, res) {
       console.log('Total weight (lbs):', totalWeightLbs);
       console.log('Total weight (oz):', weightOz);
       
-      // === PHONE NUMBER FIX ===
-      const formattedPhone = '13125551234';
-      console.log('Using phone:', formattedPhone);
+      // === PHONE NUMBER - Use customer phone, fallback to placeholder ===
+      const rawPhone = fullSession.customer_details?.phone || '';
+      const customerPhone = rawPhone.replace(/\D/g, ''); // Remove all non-digits
+      const formattedPhone = customerPhone.length >= 10 ? customerPhone : '13125551234';
+      console.log('Customer phone:', formattedPhone);
       
       const shipment = await easypost.Shipment.create({
         to_address: {
@@ -187,6 +189,7 @@ export default async function handler(req, res) {
         },
         from_address: {
           name: 'Card Quest Games',
+          phone: '13125551234',
           street1: '8701 W Foster Ave',
           street2: 'Unit 301',
           city: 'Chicago',
