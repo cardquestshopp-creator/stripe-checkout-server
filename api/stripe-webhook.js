@@ -138,6 +138,16 @@ export default async function handler(req, res) {
       }
       
       // === SIZE AND WEIGHT LOGIC ===
+      // Normalize size to capitalized first letter
+      const normalizeSize = (size) => {
+        if (!size) return 'Small';
+        const s = size.toString().toLowerCase();
+        if (s === 'small') return 'Small';
+        if (s === 'medium') return 'Medium';
+        if (s === 'large') return 'Large';
+        return 'Small';
+      };
+      
       const sizeDimensions = {
         'Small':  { length: 7, width: 4, height: 1 },
         'Medium': { length: 8, width: 6, height: 4 },
@@ -148,7 +158,7 @@ export default async function handler(req, res) {
       let maxSizeTier = 'Small';
       
       for (const item of items) {
-        const itemSize = item.size || 'Small';
+        const itemSize = normalizeSize(item.size);
         if ((sizePriority[itemSize] || 1) > (sizePriority[maxSizeTier] || 1)) {
           maxSizeTier = itemSize;
         }
@@ -171,13 +181,17 @@ export default async function handler(req, res) {
       console.log('Total weight (lbs):', totalWeightLbs);
       console.log('Total weight (oz):', weightOz);
       
-      // Try to get phone from Stripe, otherwise use placeholder
-      const customerPhone = fullSession.customer?.phone || fullSession.customer_details?.phone || '3125551234';
+      // Phone number with country code (EasyPost requires this format)
+      const rawPhone = fullSession.customer?.phone || fullSession.customer_details?.phone || '';
+      const customerPhone = rawPhone.replace(/\D/g, ''); // Remove all non-digits
+      const formattedPhone = customerPhone.length === 10 ? '1' + customerPhone : (customerPhone || '13125551234');
+      
+      console.log('Customer phone:', formattedPhone);
       
       const shipment = await easypost.Shipment.create({
         to_address: {
           name: shippingAddress.name,
-          phone: customerPhone,
+          phone: formattedPhone,
           street1: shippingAddress.street,
           city: shippingAddress.city,
           state: shippingAddress.state,
