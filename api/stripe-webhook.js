@@ -138,14 +138,12 @@ export default async function handler(req, res) {
       }
       
       // === SIZE AND WEIGHT LOGIC ===
-      // Size tier dimensions (in inches) - CORRECTED
       const sizeDimensions = {
-        'Small':  { length: 7, width: 4, height: 1 },   // Single cards
-        'Medium': { length: 8, width: 6, height: 4 },  // ETBs, small boxes
-        'Large':  { length: 16, width: 12, height: 6 }, // Booster boxes, bulky items
+        'Small':  { length: 7, width: 4, height: 1 },
+        'Medium': { length: 8, width: 6, height: 4 },
+        'Large':  { length: 16, width: 12, height: 6 },
       };
       
-      // Determine the largest size in the cart for parcel dimensions
       const sizePriority = { 'Small': 1, 'Medium': 2, 'Large': 3 };
       let maxSizeTier = 'Small';
       
@@ -158,18 +156,14 @@ export default async function handler(req, res) {
       
       const parcelDimensions = sizeDimensions[maxSizeTier] || sizeDimensions['Small'];
       
-      // Calculate total weight from items (weight is in POUNDS per item)
       let totalWeightLbs = 0;
       for (const item of items) {
-        const itemWeight = parseFloat(item.weight) || 1; // Default 1 lb if not set
+        const itemWeight = parseFloat(item.weight) || 1;
         const itemQty = item.qty || 1;
         totalWeightLbs += itemWeight * itemQty;
       }
       
-      // Convert pounds to ounces for EasyPost (1 lb = 16 oz)
       const totalWeightOz = totalWeightLbs * 16;
-      
-      // Cap weight at 50 oz (about 3 lbs) for EasyPost
       const weightOz = Math.min(totalWeightOz, 50);
       
       console.log('Parcel size tier:', maxSizeTier);
@@ -177,9 +171,13 @@ export default async function handler(req, res) {
       console.log('Total weight (lbs):', totalWeightLbs);
       console.log('Total weight (oz):', weightOz);
       
+      // Try to get phone from Stripe, otherwise use placeholder
+      const customerPhone = fullSession.customer?.phone || fullSession.customer_details?.phone || '3125551234';
+      
       const shipment = await easypost.Shipment.create({
         to_address: {
           name: shippingAddress.name,
+          phone: customerPhone,
           street1: shippingAddress.street,
           city: shippingAddress.city,
           state: shippingAddress.state,
@@ -199,7 +197,7 @@ export default async function handler(req, res) {
           length: parcelDimensions.length,
           width: parcelDimensions.width,
           height: parcelDimensions.height,
-          weight: Math.ceil(weightOz * 28.3495), // Convert oz to grams
+          weight: Math.ceil(weightOz * 28.3495),
         },
       });
 
